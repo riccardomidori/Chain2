@@ -8,7 +8,112 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError
 
 
-class ImprovedPositionalEncoding(nn.Module):
+class SimplePositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 5000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe.unsqueeze(0))  # [1, max_len, d_model]
+
+    def forward(self, x):
+        seq_len = x.size(1)
+        return x + self.pe[:, :seq_len, :]
+
+
+class SimpleTransformerUpscaler(lightning.LightningModule):
+    def __init__(
+        self,
+        input_dim: int = 2,      # (power, time_delta)
+        d_model: int = 128,
+        nhead: int = 4,
+        num_encoder_layers: int = 2,
+        num_decoder_layers: int = 2,
+        dim_feedforward: int = 256,
+        output_seq_len: int = 120,
+        lr: float = 1e-4,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.input_fc = nn.Linear(input_dim, d_model)
+        self.pos_encoding = SimplePositionalEncoding(d_model)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
+
+        # Learnable queries for the decoder
+        self.query_embed = nn.Parameter(torch.randn(output_seq_len, d_model))
+
+        self.fc_out = nn.Linear(d_model, 1)
+
+        # Metrics
+        self.mse = MeanSquaredError()
+        self.mae = MeanAbsoluteError()
+
+        self.lr = lr
+
+    def forward(self, power, time_deltas, mask):
+        # Concatenate features
+        x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
+        x = self.input_fc(x)                         # [B, seq_len, d_model]
+        x = self.pos_encoding(x)
+
+        # Encode irregular input
+        memory = self.encoder(x, src_key_padding_mask=~mask)
+
+        # Prepare queries
+        batch_size = x.size(0)
+        queries = self.query_embed.unsqueeze(0).expand(batch_size, -1, -1)
+        queries = self.pos_encoding(queries)
+
+        # Decode
+        decoded = self.decoder(queries, memory, memory_key_padding_mask=~mask)
+
+        return self.fc_out(decoded)  # [B, output_seq_len, 1]
+
+    def training_step(self, batch, batch_idx):
+        return self.do_step(batch, batch_idx, True)
+
+    def validation_step(self, batch, batch_idx):
+        return self.do_step(batch, batch_idx, False)
+
+    def do_step(self, batch, batch_idx, is_train):
+        if is_train:
+            key = "train"
+        else:
+            key = "val"
+        power, y, mask, time_deltas, ts = batch
+        y_hat = self(power, time_deltas, mask)
+        loss = nn.MSELoss()(y_hat, y)
+        self.mse(y_hat.squeeze(-1), y.squeeze(-1))
+        self.mae(y_hat.squeeze(-1), y.squeeze(-1))
+        self.log(f"{key}_loss", loss, prog_bar=True)
+        self.log(f"{key}_mse", self.mse, prog_bar=True)
+        self.log(f"{key}_mae", self.mae)
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.lr)
+
+
+
+class PositionalEncoding(nn.Module):
     """
     Enhanced positional encoding with learnable components
     """
@@ -180,7 +285,7 @@ class ImprovedTransformerTimeSeriesUpscaler(nn.Module):
 
         # Enhanced temporal encoding
         self.temporal_encoding = ImprovedTemporalEncoding(d_model)
-        self.positional_encoding = ImprovedPositionalEncoding(d_model, max_input_len)
+        self.positional_encoding = PositionalEncoding(d_model, max_input_len)
 
         # Multi-scale attention for encoder
         if use_multi_scale:
@@ -202,7 +307,7 @@ class ImprovedTransformerTimeSeriesUpscaler(nn.Module):
 
         # Learnable output queries with better initialization
         self.output_queries = nn.Parameter(torch.randn(output_seq_len, d_model) * 0.02)
-        self.output_pos_encoding = ImprovedPositionalEncoding(d_model, output_seq_len)
+        self.output_pos_encoding = PositionalEncoding(d_model, output_seq_len)
 
         # Enhanced decoder
         decoder_layer = nn.TransformerDecoderLayer(
