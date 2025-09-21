@@ -14,19 +14,39 @@ class TemporalEncoding(nn.Module):
     def __init__(self, d_model: int):
         super().__init__()
         self.d_model = d_model
-        self.time_projection = nn.Linear(1, d_model)
+        self.time_projection = nn.Sequential(
+            nn.Linear(1, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(d_model // 2, d_model)
+        )
+
+        # Learnable time embedding
+        self.time_embedding = nn.Embedding(1000, d_model)  # For discretized time
+
+        # Layer normalization
+        self.layer_norm = nn.LayerNorm(d_model)
 
     def forward(self, x, time_deltas):
         # x: (batch, seq_len, d_model)
-        # time_deltas: (batch, seq_len, 1)
+        # time_deltas: (batch, seq_len, 1) or (batch, seq_len)
 
-        # Project time deltas to model dimension
-        temporal_encoding = self.time_projection(
-            time_deltas
-        )  # (batch, seq_len, d_model)
+        if time_deltas.dim() == 2:
+            time_deltas = time_deltas.unsqueeze(-1)
 
-        # Add temporal information to input
-        return x + temporal_encoding
+        # Continuous time encoding
+        temporal_encoding = self.time_projection(time_deltas)
+
+        # Add discretized time encoding (optional)
+        # Discretize time deltas to reasonable bins
+        time_bins = torch.clamp((time_deltas.squeeze(-1) * 10).long(), 0, 999)
+        discrete_encoding = self.time_embedding(time_bins)
+
+        # Combine encodings
+        combined_encoding = temporal_encoding + 0.1 * discrete_encoding
+        combined_encoding = self.layer_norm(combined_encoding)
+
+        return x + combined_encoding
 
 class PositionalEncoding(nn.Module):
     """

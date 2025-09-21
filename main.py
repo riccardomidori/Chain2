@@ -1,18 +1,17 @@
 from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
 from Transformer import PureTransformerUpscaler
-from GAN import GANTimeSeriesUpscaler
+from BaselineLSTM import LSTMUpscaler
 
 def train():
-    # 1. Load and prepare data
     batch_size = 16
 
     target_frequency = 10
-    time_window_hours = 2
+    time_window_hours = 1
     seq_len = time_window_hours * 3600 // target_frequency
 
     n_jobs = 1
-    house_limit = 50
+    house_limit = 3
     days = 5
 
     print("Starting transformer-based time series upscaling...")
@@ -21,6 +20,7 @@ def train():
         limit=house_limit,
         n_days=days,
         down_sample_to=target_frequency,
+        normalization_method="standard"
     )
     chain2_data, ned_data, power_scaling, time_delta_scaling = tsp.load_chain_2()
 
@@ -79,15 +79,20 @@ def train():
     #     weight_decay=0.01,
     #     power_scaler=power_scaling,
     # )
-    model = GANTimeSeriesUpscaler(
-        output_sequence_length=seq_len,
-        input_channels=1,
+    # model = GANTimeSeriesUpscaler(
+    #     output_sequence_length=seq_len,
+    #     input_channels=1,
+    # )
+    model = LSTMUpscaler(
+        input_dim=2,
+        hidden_dim=batch_size,
+        output_seq_len=seq_len
     )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
         val_loader=val_loader,
         model_visualizer=visualizer,
-        log_every_n_epochs=10,
+        log_every_n_epochs=2,
     )
     mt = ModelTrainingTesting(
         model=model,

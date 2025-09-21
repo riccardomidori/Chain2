@@ -1,13 +1,13 @@
+import random
+
 from lightning.pytorch.callbacks import Callback
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from torch import Tensor, no_grad
-from random import sample
 import numpy as np
 import lightning
 from config.Logger import XMLLogger
 from pathlib import Path
-
+import torch
 
 class ModelVisualizer:
     """
@@ -24,108 +24,53 @@ class ModelVisualizer:
         self.time_interval = time_interval
         self.model = model
 
-    def plot_predictions(
-        self,
-        ts,
-        power: Tensor,
-        time_delta: Tensor,
-        mask: Tensor,
-        target: Tensor,
-        plot_file_path: str = "predictions.png",
-    ):
-        """
-        Generates and saves a plot showing the model's predictions.
-
-        The plot includes the raw Chain2 input power, the NED_D target power,
-        and the model's predicted NED_D power.
-
-        Args:
-            power (torch.Tensor): The input power tensor from a single batch.
-            time_delta (torch.Tensor): The input time_delta tensor from a single batch.
-            mask (torch.Tensor): The mask tensor for the batch.
-            target (torch.Tensor): The true NED_D power values for the batch.
-            plot_file_path (str): The file path to save the plot.
-        """
+    def plot_predictions(self, ts, power, time_delta, mask, target, plot_file_path="predictions.png"):
         self.model.eval()
-        with no_grad():
-            # Get the model's predictions
-            prediction = self.model(power, time_delta, mask)
+        with torch.no_grad():
+            x = torch.cat([power, time_delta], dim=-1)  # [B, seq_len, 2]
+            prediction = self.model(x, target)
 
-        # Move tensors to CPU for plotting
-        ts_cpu = Tensor.cpu(ts)
-        power_cpu = Tensor.cpu(power)
-        time_delta_cpu = Tensor.cpu(time_delta)
-        target_cpu = Tensor.cpu(target)
-        prediction_cpu = Tensor.cpu(prediction)
-        mask_cpu = Tensor.cpu(mask)
-        # The input data (Chain2) is irregularly sampled, while the output is regular.
-        # We need to compute the cumulative time for plotting the Chain2 data.
-        # Note: The time_delta here is the *input* to the model, which is irregular.
-        # The output target and prediction are regularly sampled.
+        # Move to CPU & numpy
+        power_cpu = power.detach().cpu().numpy()
+        mask_cpu = mask.detach().cpu().numpy()
+        target_cpu = target.detach().cpu().numpy()
+        prediction_cpu = prediction.detach().cpu().numpy()
 
-        # We will plot the first sample in the batch for clarity.
-        sample_idx = sample(range(ts_cpu.shape[0]), 1)[0]
+        # Pick first sample
+        sample_idx = random.choice(range(0, power_cpu.shape[0]))
 
-        # Handle the case where the output is a single value (seq_len=1)
-        if target_cpu.ndim == 1:
-            target_cpu = np.expand_dims(target_cpu, axis=1)
-            prediction_cpu = np.expand_dims(prediction_cpu, axis=1)
+        # Squeeze last dim
+        target_cpu = target_cpu.squeeze(-1)
+        prediction_cpu = prediction_cpu.squeeze(-1)
 
-        # Create time axis for the irregular Chain2 data
-        # We filter out the padded values
-        valid_indices = mask_cpu[sample_idx]
-        valid_power = power_cpu[sample_idx]
-        valid_time_deltas = time_delta_cpu[sample_idx]
+        # Chain2 input: only valid points
+        valid_mask = mask_cpu[sample_idx]
+        valid_power = power_cpu[sample_idx][valid_mask, 0]
 
-        # Calculate cumulative time for the Chain2 data
-        cumulative_time_chain2 = np.cumsum(valid_time_deltas)
-        # Shift to start at 0
-        cumulative_time_chain2 = np.insert(cumulative_time_chain2, 0, 0)[:-1]
-
-        # Create time axis for the regular NED_D data
-        # Assumes a consistent 30s interval as per your setup
-        ned_d_interval = self.time_interval
-        cumulative_time_nedd = np.arange(target_cpu.shape[1]) * ned_d_interval
-
-        # Create the plot
-        plt.figure(figsize=(12, 7))
         plt.style.use("seaborn-v0_8-whitegrid")
 
-        # Plot the original Chain2 input power
-        plt.plot(
-            ts_cpu[sample_idx],
-            valid_power,
-            "o-",
-            color="skyblue",
-            label="Chain2 Input Power",
-        )
+        # Create the figure and subplots in one line, setting the figure size and sharing the x-axis.
+        fig, ax = plt.subplots(2, figsize=(12, 7), sharex=True)
 
-        # Plot the true NED_D target power
-        plt.plot(
-            ts_cpu[sample_idx],
-            target_cpu[sample_idx],
-            "ro--",
-            markersize=5,
-            label="NED_D Target Power",
-        )
+        # Plot the data on the respective subplots.
+        ax[0].plot(valid_power, "o-", color="skyblue", label="Chain2 Input Power")
+        ax[1].plot(target_cpu[sample_idx], "ro--", label="NED_D Target")
+        ax[1].plot(prediction_cpu[sample_idx], "go-", label="Model Prediction")
 
-        # Plot the model's prediction
-        plt.plot(
-            ts_cpu[sample_idx],
-            prediction_cpu[sample_idx],
-            "go-",
-            markersize=5,
-            label="Model Prediction",
-        )
+        # Use the correct `set_` methods for titles and labels.
+        ax[0].set_title("Model Predictions vs Target Data")
+        ax[1].set_xlabel("Time (seconds)")
+        ax[0].set_ylabel("Power (kW)")
+        ax[1].set_ylabel("Power (kW)")
 
-        plt.title("Model Predictions vs. Target Data")
-        plt.xlabel("Time (seconds)")
-        plt.ylabel("Power (kW)")
-        plt.legend()
-        plt.tight_layout()
-        plt.grid(True)
-        # plt.savefig(plot_file_path)
-        # print(f"Plot saved to {plot_file_path}")
+        # Add legends to each subplot.
+        ax[0].legend()
+        ax[1].legend()
+
+        # Adjust layout to prevent labels from overlapping.
+        fig.tight_layout()
+
+        # Display the final plot.
         plt.show()
 
 
@@ -161,9 +106,8 @@ class VisualizationCallback(Callback):
                 self.val_iter = iter(self.val_loader)
                 batch = next(self.val_iter)
 
-                # Unpack the batch tuple. Make sure the order matches your Dataset.__getitem__
+            # Unpack the batch tuple. Make sure the order matches your Dataset.__getitem__
             power, target, mask, time_delta, ts = batch
-            ts = ts.to(pl_module.device)
             power = power.to(pl_module.device)
             time_delta = time_delta.to(pl_module.device)
             mask = mask.to(pl_module.device)
@@ -296,7 +240,7 @@ class ModelTrainingTesting:
             f"checkpoints/{name}",
             method=self.model.method,
         )
-        with no_grad():
+        with torch.no_grad():
             for item in self.test_dataloader.dataset:
                 x, y = item
                 x_input = x.reshape(1, 1, -1)
