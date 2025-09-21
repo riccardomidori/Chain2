@@ -37,11 +37,12 @@ class LSTMUpscaler(pl.LightningModule):
         self.train_mae = MeanAbsoluteError()
         self.val_mae = MeanAbsoluteError()
 
-    def forward(self, x, target=None, teacher_forcing_ratio=0.5):
+    def forward(self, power, time_deltas, target=None, teacher_forcing_ratio=0.5):
         """
         x: [batch, seq_len, input_dim] (power, time_delta)
         target: [batch, out_seq_len, 1]
         """
+        x = torch.cat([power, time_deltas], dim=-1)
         batch_size = x.size(0)
         out_seq_len = self.hparams.output_seq_len
 
@@ -67,8 +68,7 @@ class LSTMUpscaler(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         power, y, mask, time_deltas, ts = batch
-        x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
-        y_hat = self(x, y)
+        y_hat = self(power, time_deltas, y)
         loss = nn.MSELoss()(y_hat, y)
         self.train_mse(y_hat.squeeze(-1), y.squeeze(-1))
         self.train_mae(y_hat.squeeze(-1), y.squeeze(-1))
@@ -79,8 +79,7 @@ class LSTMUpscaler(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         power, y, mask, time_deltas, ts = batch
-        x = torch.cat([power, time_deltas], dim=-1)
-        y_hat = self(x)
+        y_hat = self(power, time_deltas)
         loss = nn.MSELoss()(y_hat, y)
         self.val_mse(y_hat.squeeze(-1), y.squeeze(-1))
         self.val_mae(y_hat.squeeze(-1), y.squeeze(-1))

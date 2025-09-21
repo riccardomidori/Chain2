@@ -27,8 +27,7 @@ class ModelVisualizer:
     def plot_predictions(self, ts, power, time_delta, mask, target, plot_file_path="predictions.png"):
         self.model.eval()
         with torch.no_grad():
-            x = torch.cat([power, time_delta], dim=-1)  # [B, seq_len, 2]
-            prediction = self.model(x, target)
+            prediction = self.model(power, time_delta)
 
         # Move to CPU & numpy
         power_cpu = power.detach().cpu().numpy()
