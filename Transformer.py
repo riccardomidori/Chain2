@@ -34,6 +34,7 @@ class SimpleTransformerUpscaler(lightning.LightningModule):
         dim_feedforward: int = 256,
         output_seq_len: int = 120,
         lr: float = 1e-4,
+        method="regression"
     ):
         super().__init__()
         self.save_hyperparameters()

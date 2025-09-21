@@ -1,6 +1,6 @@
 from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
-from Transformer import PureTransformerUpscaler
+from Transformer import SimpleTransformerUpscaler
 from BaselineLSTM import LSTMUpscaler
 
 def train():
@@ -87,6 +87,10 @@ def train():
         input_dim=2,
         hidden_dim=batch_size,
         output_seq_len=seq_len
+    )
+    model = SimpleTransformerUpscaler(
+        d_model=batch_size,
+        output_seq_len=seq_len,
     )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
