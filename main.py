@@ -1,17 +1,19 @@
 from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
-from Transformer import SimpleTransformerUpscaler
+from Transformer import SimpleTransformer, PureTransformerUpscaler
 from BaselineLSTM import LSTMUpscaler
+from CNN import CNNUpscaler
 
 def train():
     batch_size = 16
 
-    target_frequency = 10
+    target_frequency = 30
     time_window_hours = 1
     seq_len = time_window_hours * 3600 // target_frequency
+    seq_len = 360
 
     n_jobs = 1
-    house_limit = 3
+    house_limit = 10
     days = 5
 
     print("Starting transformer-based time series upscaling...")
@@ -69,29 +71,33 @@ def train():
         drop_last=False,
         persistent_workers=True,
     )
-    # model = PureTransformerUpscaler(
-    #     output_sequence_length=seq_len,
-    #     input_channels=1,  # power
-    #     d_model=batch_size,
-    #     nhead=8,
-    #     num_layers=4,
-    #     lr=5e-4,
-    #     weight_decay=0.01,
-    #     power_scaler=power_scaling,
-    # )
+    model = PureTransformerUpscaler(
+        output_sequence_length=seq_len,
+        input_channels=2,  # power
+        d_model=batch_size,
+        nhead=8,
+        num_layers=4,
+        lr=5e-4,
+        weight_decay=0.01,
+        power_scaler=power_scaling,
+    )
     # model = GANTimeSeriesUpscaler(
     #     output_sequence_length=seq_len,
     #     input_channels=1,
     # )
-    model = LSTMUpscaler(
-        input_dim=2,
-        hidden_dim=batch_size,
-        output_seq_len=seq_len
-    )
-    model = SimpleTransformerUpscaler(
+    # model = LSTMUpscaler(
+    #     input_dim=2,
+    #     hidden_dim=batch_size,
+    #     output_seq_len=seq_len
+    # )
+    model = SimpleTransformer(
         d_model=batch_size,
         output_seq_len=seq_len,
     )
+    # model = CNNUpscaler(
+    #     hidden_dim=batch_size,
+    #     output_seq_len=seq_len
+    # )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
         val_loader=val_loader,

@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from pandas import Timedelta
+import seaborn as sns
 
 
 class TimeSeriesPreparation:
@@ -77,12 +78,15 @@ class TimeSeriesPreparation:
             chain2_df = chain2_df.with_columns(
                 original_power=pl.col("power"),
                 original_time_delta=pl.col("time_delta"),
-                power=(pl.col("power") - pl.col("power").mean()) / pl.col("power").std(),
-                time_delta=(pl.col("time_delta") - pl.col("time_delta").mean()) / pl.col("time_delta").std(),
+                power=(pl.col("power") - pl.col("power").mean())
+                / pl.col("power").std(),
+                time_delta=(pl.col("time_delta") - pl.col("time_delta").mean())
+                / pl.col("time_delta").std(),
             )
             ned_df = ned_df.with_columns(
                 original_power=pl.col("power"),
-                power=(pl.col("power") - pl.col("power").mean()) / pl.col("power").std(),
+                power=(pl.col("power") - pl.col("power").mean())
+                / pl.col("power").std(),
             )
         else:
             chain2_df = chain2_df.with_columns(
@@ -165,6 +169,10 @@ class TimeSeriesPreparation:
                 chain2_df["original_power"].min(),
                 chain2_df["original_power"].max(),
             ),
+            "chain2_time_range (s)": (
+                chain2_df["original_time_delta"].min(),
+                chain2_df["original_time_delta"].max(),
+            ),
             "ned_power_range (W)": (
                 ned_df["original_power"].min(),
                 ned_df["original_power"].max(),
@@ -206,12 +214,12 @@ class TimeSeriesPreparation:
         df_grouped = df.group_by_dynamic(
             index_column="timestamp", every=every, period="1s", closed="left"
         ).agg(power=pl.col("power").first())
-        df_cross = self.power_crossings(df, power_col="power")
-        df_down_sampled = (
-            pl.concat([df_grouped, df_cross])
-            .unique(subset=["timestamp"])
-            .sort("timestamp")
-        )
+        # df_cross = self.power_crossings(df, power_col="power")
+        # df_down_sampled = (
+        #     pl.concat([df_grouped, df_cross])
+        #     .unique(subset=["timestamp"])
+        #     .sort("timestamp")
+        # )
         if self.down_sample_to > 1:
             df = df.group_by_dynamic(
                 "timestamp", every=f"{self.down_sample_to}s", period="1s", closed="left"
@@ -225,7 +233,7 @@ class TimeSeriesPreparation:
             plt.show()
 
         return (
-            df_down_sampled.with_columns(house_id=pl.lit(house_id)),
+            df_grouped.with_columns(house_id=pl.lit(house_id)),
             df.with_columns(house_id=pl.lit(house_id)),
         )
 
@@ -246,21 +254,27 @@ class TimeSeriesPreparation:
         for row in users.iter_rows(named=True):
             house_id = row["id"]
             df_input, df_target = self.chain2(house_id, n=self.n_days)
+            print(f"HouseID@{house_id} - {len(df_input)} Chain2 samples - {len(df_target)} NED_D samples")
             if df_input is not None and df_target is not None:
                 input_dfs.append(df_input)
                 target_dfs.append(df_target)
                 processed_houses += 1
 
         chain2_df, ned_df = (
-            pl.concat(input_dfs, how="vertical"),
-            pl.concat(target_dfs, how="vertical"),
-        )
-        chain2_df = chain2_df.with_columns(
-            time_delta=pl.col("timestamp").over("house_id").diff().dt.total_seconds().fill_null(0)
+            pl.concat(input_dfs, how="vertical").sort(by=["house_id", "timestamp"]),
+            pl.concat(target_dfs, how="vertical").sort(by=["house_id", "timestamp"]),
         )
 
+        chain2_df = chain2_df.with_columns(
+            time_delta=pl.col("timestamp")
+            .over("house_id")
+            .diff()
+            .dt.total_seconds()
+            .fill_null(0)
+        ).filter(pl.col("time_delta").abs() <= 60)
+
         chain2_df, ned_df = self.normalize_data_simple(chain2_df, ned_df)
-        print(chain2_df.filter(pl.col("time_delta").gt(60)))
+
         # Calculate and store statistics
         self.calculate_statistics(chain2_df, ned_df, processed_houses)
         scaling_obj = self.get_scaling()
@@ -297,7 +311,7 @@ class UpScalingDataset(Dataset):
         split_by_time: bool = True,  # Whether to split by time (avoid data leakage)
         split_ratio: float = 0.8,  # Train/val split ratio
         phase: str = "train",  # 'train', 'val', or 'test'
-        show=False
+        show=False,
     ):
         self.ned_d = ned_d
         self.chain2 = chain2
@@ -331,9 +345,10 @@ class UpScalingDataset(Dataset):
             # Random split (less recommended)
             n_train = int(len(current_target) * self.split_ratio)
             indices = np.random.permutation(len(current_target))
-            return (current_target[indices[:n_train]][timestamp_col],
-                    current_target[indices[n_train:]][timestamp_col]
-                    )
+            return (
+                current_target[indices[:n_train]][timestamp_col],
+                current_target[indices[n_train:]][timestamp_col],
+            )
 
         # Time-based split (recommended)
         split_time = np.quantile(current_target[timestamp_col], self.split_ratio)
@@ -525,7 +540,7 @@ class UpScalingDataset(Dataset):
                     .unsqueeze(-1),
                     "mask": torch.from_numpy(attention_mask).bool(),
                     "target": torch.from_numpy(target_power).float().unsqueeze(-1),
-                    "ts": ts
+                    "ts": ts,
                 }
                 self.dataset.append(sample)
                 samples += 1
@@ -558,8 +573,12 @@ class UpScalingDataset(Dataset):
         step_size = max(1, int(self.sequence_len * (1 - self.overlap_ratio)))
 
         for house_id in house_ids:
-            house_ned = self.ned_d.filter(pl.col("house_id") == house_id).sort("timestamp")
-            house_chain = self.chain2.filter(pl.col("house_id") == house_id).sort("timestamp")
+            house_ned = self.ned_d.filter(pl.col("house_id") == house_id).sort(
+                "timestamp"
+            )
+            house_chain = self.chain2.filter(pl.col("house_id") == house_id).sort(
+                "timestamp"
+            )
 
             if len(house_ned) < self.sequence_len:
                 continue
@@ -571,7 +590,7 @@ class UpScalingDataset(Dataset):
             )
 
             for i in range(0, len(house_ned) - self.sequence_len + 1, step_size):
-                curr_ned = house_ned[i: i + self.sequence_len]
+                curr_ned = house_ned[i : i + self.sequence_len]
                 start_time = curr_ned[0]["timestamp"].item()
                 end_time = curr_ned[-1]["timestamp"].item()
 
@@ -581,18 +600,23 @@ class UpScalingDataset(Dataset):
 
                 # Take only chain2 points strictly within this window
                 curr_chain = house_chain.filter(
-                    (pl.col("timestamp") >= start_time) & (pl.col("timestamp") <= end_time)
+                    (pl.col("timestamp") >= start_time)
+                    & (pl.col("timestamp") <= end_time)
                 )
 
                 if len(curr_chain) > self.max_input_len:
-                    curr_chain = curr_chain[-self.max_input_len:]
+                    curr_chain = curr_chain[-self.max_input_len :]
 
                 if self.show:
                     print(curr_ned)
                     print(curr_chain)
                     fig, ax = plt.subplots()
-                    curr_ned.to_pandas().set_index("timestamp")["power"].plot(ax=ax, color="red")
-                    curr_chain.to_pandas().set_index("timestamp")["power"].plot(ax=ax, color="blue")
+                    curr_ned.to_pandas().set_index("timestamp")["power"].plot(
+                        ax=ax, color="red"
+                    )
+                    curr_chain.to_pandas().set_index("timestamp")["power"].plot(
+                        ax=ax, color="blue"
+                    )
                     plt.show()
 
                 if len(curr_chain) < self.min_input_len:
@@ -601,7 +625,9 @@ class UpScalingDataset(Dataset):
                 # Extract arrays
                 target_power = curr_ned["power"].to_numpy().astype(np.float32)
                 chain_power = curr_chain["power"].to_numpy().astype(np.float32)
-                chain_time_deltas = curr_chain["time_delta"].to_numpy().astype(np.float32)
+                chain_time_deltas = (
+                    curr_chain["time_delta"].to_numpy().astype(np.float32)
+                )
 
                 current_len = len(chain_power)
 
@@ -617,8 +643,11 @@ class UpScalingDataset(Dataset):
                 mask[:current_len] = True
 
                 # Convert timestamps to numpy
-                ts = curr_ned.with_columns(ts_int=pl.col("timestamp").dt.timestamp()) \
-                    .select("ts_int").to_numpy()
+                ts = (
+                    curr_ned.with_columns(ts_int=pl.col("timestamp").dt.timestamp())
+                    .select("ts_int")
+                    .to_numpy()
+                )
 
                 # Build sample
                 sample = {
@@ -632,7 +661,10 @@ class UpScalingDataset(Dataset):
 
         print(f"[create_dataset_simple] Total samples: {len(self.dataset)}")
         if len(self.dataset) > 0:
-            print("Sample example:", {k: v.shape for k, v in self.dataset[0].items() if hasattr(v, "shape")})
+            print(
+                "Sample example:",
+                {k: v.shape for k, v in self.dataset[0].items() if hasattr(v, "shape")},
+            )
 
     def __len__(self):
         return len(self.dataset)
@@ -663,7 +695,9 @@ if __name__ == "__main__":
     TARGET_FREQ = 10
     TIME_WINDOW_HOURS = 2
     SEQ_LEN = TIME_WINDOW_HOURS * 3600 // TARGET_FREQ
-    tsp = TimeSeriesPreparation(down_sample_to=TARGET_FREQ, n_days=3, to_normalize=False)
+    tsp = TimeSeriesPreparation(
+        down_sample_to=TARGET_FREQ, limit=2, n_days=1, to_normalize=False
+    )
     chain2, ned_d, power_scaling, time_delta_scaling = tsp.load_chain_2()
     train_dataset = UpScalingDataset(
         ned_d=ned_d,
@@ -676,5 +710,5 @@ if __name__ == "__main__":
         phase="train",
         split_by_time=True,
         time_window_hours=TIME_WINDOW_HOURS,
-        show=False
+        show=False,
     )

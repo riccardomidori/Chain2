@@ -23,7 +23,7 @@ class SimplePositionalEncoding(nn.Module):
         return x + self.pe[:, :seq_len, :]
 
 
-class SimpleTransformerUpscaler(lightning.LightningModule):
+class SimpleTransformer(lightning.LightningModule):
     def __init__(
         self,
         input_dim: int = 2,      # (power, time_delta)
@@ -72,7 +72,7 @@ class SimpleTransformerUpscaler(lightning.LightningModule):
     def forward(self, power, time_deltas, mask):
         # Concatenate features
         x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
-        x = self.input_fc(x)                         # [B, seq_len, d_model]
+        x = self.input_fc(x)                                # [B, seq_len, d_model]
         x = self.pos_encoding(x)
 
         # Encode irregular input
