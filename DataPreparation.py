@@ -76,18 +76,17 @@ class TimeSeriesPreparation:
 
     def normalize_data_simple(self, chain2_df: pl.DataFrame, ned_df: pl.DataFrame):
         if self.to_normalize:
+            min_, max_ = ned_df["power"].min(), ned_df["power"].quantile(quantile=0.98)
             chain2_df = chain2_df.with_columns(
                 original_power=pl.col("power"),
                 original_time_delta=pl.col("time_delta"),
-                power=(pl.col("power") - pl.col("power").mean())
-                / pl.col("power").std(),
+                power=pl.col("power").clip(0, max_) / max_,
                 time_delta=(pl.col("time_delta") - pl.col("time_delta").mean())
                 / pl.col("time_delta").std(),
             )
             ned_df = ned_df.with_columns(
                 original_power=pl.col("power"),
-                power=(pl.col("power") - pl.col("power").mean())
-                / pl.col("power").std(),
+                power=pl.col("power").clip(0, max_) / max_,
             )
         else:
             chain2_df = chain2_df.with_columns(
@@ -239,7 +238,7 @@ class TimeSeriesPreparation:
             df.with_columns(house_id=pl.lit(house_id)),
         )
 
-    def load_chain_2(self):
+    def load_chain_2(self, limit=-1):
         p = Path(f"data/{self.down_sample_to}")
         if not p.exists() and not (p / "chain2.csv").exists():
             users_query = (
@@ -287,6 +286,9 @@ class TimeSeriesPreparation:
                     pl.Datetime, "%Y-%m-%dT%H:%M:%S%.f"
                 )
             )
+            if limit > 0:
+                chain2_df = chain2_df.limit(limit)
+                ned_df = ned_df.limit(limit)
 
         chain2_df = chain2_df.with_columns(
             time_delta=pl.col("timestamp")
@@ -588,11 +590,11 @@ class UpScalingDataset(Dataset):
         - Target = ned_d sequence
         """
 
-        print(f"[create_dataset_simple] Building dataset for {self.phase}")
         self.dataset = []
 
         house_ids = self.ned_d["house_id"].unique()
         step_size = max(1, int(self.sequence_len * (1 - self.overlap_ratio)))
+        print(f"[create_dataset_simple] Building dataset for {self.phase} step size {step_size}")
 
         for house_id in house_ids:
             house_ned = self.ned_d.filter(pl.col("house_id") == house_id).sort(
@@ -625,11 +627,8 @@ class UpScalingDataset(Dataset):
                     (pl.col("timestamp") >= start_time)
                     & (pl.col("timestamp") <= end_time)
                 )
-
-                if len(curr_chain) > self.max_input_len:
-                    curr_chain = curr_chain[-self.max_input_len :]
-
-                if self.show:
+                has_spike = not curr_chain.filter(pl.col("original_power").gt(300)).is_empty()
+                if self.show and has_spike:
                     print(curr_ned)
                     print(curr_chain)
                     fig, ax = plt.subplots()
@@ -641,7 +640,13 @@ class UpScalingDataset(Dataset):
                     )
                     plt.show()
 
+                if len(curr_chain) > self.max_input_len:
+                    curr_chain = curr_chain[-self.max_input_len :]
+
                 if len(curr_chain) < self.min_input_len:
+                    continue
+
+                if not has_spike:
                     continue
 
                 # Extract arrays

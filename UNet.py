@@ -1,166 +1,151 @@
-import lightning
 import torch
 import torch.nn as nn
-from NNBlock import UNetBlock
-from torchmetrics.regression import (
-    MeanAbsoluteError,
-    MeanSquaredError,
-)
+import lightning as pl
+from torchmetrics.regression import MeanSquaredError, MeanAbsoluteError
 
-class UNetTimeSeriesUpscaler(lightning.LightningModule):
-    """
-    A U-Net architecture for time series up-scaling (super-resolution).
 
-    The encoder down-samples the high-frequency Chain2 data, and the decoder
-    up-samples to match the lower-frequency NED_D data, using skip connections
-    to preserve fine-grained temporal details.
+class ConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding),
+            nn.ReLU(),
+            nn.BatchNorm1d(out_channels),
+            nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding),
+            nn.ReLU(),
+            nn.BatchNorm1d(out_channels),
+        )
 
-    NOTE: This model requires regularly sampled input data. A simple interpolation
-    step is included in the forward pass to handle the irregular Chain2 data.
-    """
+    def forward(self, x):
+        return self.block(x)
 
+
+class UNetUpscaler(pl.LightningModule):
     def __init__(
         self,
-        input_channels: int,
-        output_channels: int,
-        output_sequence_length: int,
-        base_channels: int = 64,
+        input_dim: int = 2,  # (power, time_delta)
+        base_channels: int = 32,
+        depth: int = 4,
+        output_seq_len: int = 120,
+        lr: float = 1e-3,
         method="regression",
     ):
-        """
-        Args:
-            input_channels (int): Number of features in the input sequence (e.g., 1 for power).
-            output_channels (int): Number of features in the output sequence (e.g., 1 for power).
-            output_sequence_length (int): The number of time steps in the target NED_D sequence.
-            base_channels (int): The number of channels in the first U-Net block.
-        """
         super().__init__()
         self.save_hyperparameters()
-        self.output_sequence_length = output_sequence_length
-        self.output_channels = output_channels
 
-        # Encoder (Down-sampling path)
-        self.enc1 = UNetBlock(input_channels, base_channels)
-        self.pool1 = nn.MaxPool1d(2)
-        self.enc2 = UNetBlock(base_channels, base_channels * 2)
-        self.pool2 = nn.MaxPool1d(2)
-        self.enc3 = UNetBlock(base_channels * 2, base_channels * 4)
-        self.pool3 = nn.MaxPool1d(2)
-
-        # Bottleneck
-        self.bottleneck = UNetBlock(base_channels * 4, base_channels * 8)
-
-        # Decoder (Up-sampling path with skip connections)
-        self.upconv3 = nn.ConvTranspose1d(
-            base_channels * 8, base_channels * 4, kernel_size=2, stride=2
-        )
-        self.dec3 = UNetBlock(base_channels * 4 + base_channels * 4, base_channels * 4)
-        self.upconv2 = nn.ConvTranspose1d(
-            base_channels * 4, base_channels * 2, kernel_size=2, stride=2
-        )
-        self.dec2 = UNetBlock(base_channels * 2 + base_channels * 2, base_channels * 2)
-        self.upconv1 = nn.ConvTranspose1d(
-            base_channels * 2, base_channels, kernel_size=2, stride=2
-        )
-        self.dec1 = UNetBlock(base_channels + base_channels, base_channels)
-
-        # Final output layer
-        self.output_layer = nn.Conv1d(base_channels, output_channels, kernel_size=1)
-
-        # Loss function
-        self.loss = MeanSquaredError()
-
-    def forward(
-        self, power: torch.Tensor, time_delta: torch.Tensor, mask: torch.Tensor
-    ):
-        """
-        Forward pass with a pre-processing step to handle irregular data.
-
-        Args:
-            power (torch.Tensor): The input power tensor from a single batch.
-            time_delta (torch.Tensor): The input time_delta tensor from a single batch.
-            mask (torch.Tensor): The mask tensor for the batch.
-
-        Returns:
-            torch.Tensor: The predicted output sequence.
-        """
-        batch_size, input_seq_len, _ = power.shape
-
-        # --- Pre-processing: Interpolate irregular input to a regular grid ---
-        # The input has shape (batch, seq_len, 1). We need to get a regular grid
-        # with a consistent number of points. We will use the max_len for this.
-        # This requires the input to be on the CPU for a simple interpolation method.
-        # NOTE: For a real-world application, a more robust interpolation method would be needed.
-        regular_grid_length = 1024  # A fixed length for the U-Net input
-
-        # The input to the U-Net must be (batch, channels, seq_len)
-        x = power.permute(0, 2, 1)
-
-        # --- U-Net forward pass ---
         # Encoder
-        enc1_out = self.enc1(x)
-        enc2_out = self.enc2(self.pool1(enc1_out))
-        enc3_out = self.enc3(self.pool2(enc2_out))
+        self.encoders = nn.ModuleList()
+        self.pools = nn.ModuleList()
+        channels = [input_dim]  # Track channel progression
+
+        # Build encoder layers
+        for d in range(depth):
+            in_ch = channels[-1]
+            out_ch = base_channels * (2**d)
+            self.encoders.append(ConvBlock(in_ch, out_ch))
+            self.pools.append(nn.MaxPool1d(2))
+            channels.append(out_ch)
 
         # Bottleneck
-        bottleneck_out = self.bottleneck(self.pool3(enc3_out))
+        bottleneck_in = channels[-1]
+        bottleneck_out = bottleneck_in * 2
+        self.bottleneck = ConvBlock(bottleneck_in, bottleneck_out)
 
-        # Decoder with skip connections
-        dec3_in = self.upconv3(bottleneck_out)
-        dec3_out = self.dec3(torch.cat([dec3_in, enc3_out], dim=1))
+        # Decoder
+        self.upconvs = nn.ModuleList()
+        self.decoders = nn.ModuleList()
 
-        dec2_in = self.upconv2(dec3_out)
-        dec2_out = self.dec2(torch.cat([dec2_in, enc2_out], dim=1))
+        decoder_in = bottleneck_out
+        for d in reversed(range(depth)):
+            skip_ch = channels[d + 1]  # Channels from corresponding encoder layer
+            decoder_out = base_channels * (2**d)
 
-        dec1_in = self.upconv1(dec2_out)
-        dec1_out = self.dec1(torch.cat([dec1_in, enc1_out], dim=1))
+            # Upconv reduces channels
+            self.upconvs.append(
+                nn.ConvTranspose1d(decoder_in, decoder_out, kernel_size=2, stride=2)
+            )
 
-        # Final output layer to get the desired number of channels
-        output_full_res = self.output_layer(dec1_out)
+            # Decoder block takes upconv output + skip connection
+            self.decoders.append(ConvBlock(decoder_out + skip_ch, decoder_out))
 
-        # Resize the output to the target sequence length
-        prediction = F.interpolate(
-            output_full_res,
-            size=self.output_sequence_length,
-            mode="linear",
-            align_corners=False,
-        )
+            decoder_in = decoder_out
 
-        # Final shape: (batch_size, channels, seq_len) -> (batch_size, seq_len, channels)
-        prediction = prediction.permute(0, 2, 1)
+        # Output projection: map back to 1 channel (power)
+        self.output_fc = nn.Conv1d(base_channels, 1, kernel_size=1)
 
-        return prediction
+        # Metrics
+        self.train_mse = MeanSquaredError()
+        self.val_mse = MeanSquaredError()
+        self.train_mae = MeanAbsoluteError()
+        self.val_mae = MeanAbsoluteError()
 
-    def do_step(self, batch, batch_idx, is_train=True):
-        x, y, mask, ts = batch
-        power, time_delta = x[:, :, 0:1], x[:, :, 1:2]
-        y_hat = self.forward(power, time_delta, mask)
+        self.lr = lr
+        self.output_seq_len = output_seq_len
 
-        if y.ndim < 3:
-            y = y.unsqueeze(-1)
+    def forward(self, power, time_deltas, mask):
+        # Input prep: concat features along channel dimension
+        x = power
+        # x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
+        x = x.permute(0, 2, 1)  # [B, C=2, seq_len]
 
-        loss = self.loss(y_hat, y)
+        # Encoder
+        skips = []
+        for enc, pool in zip(self.encoders, self.pools):
+            x = enc(x)
+            skips.append(x)
+            x = pool(x)
 
-        if is_train:
-            name = "train"
-        else:
-            name = "val"
-        self.log(f"{name}_loss", loss, prog_bar=True)
-        return loss
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # Decoder
+        for up, dec, skip in zip(self.upconvs, self.decoders, reversed(skips)):
+            x = up(x)
+            # Align shapes (due to pooling rounding)
+            if x.size(-1) != skip.size(-1):
+                diff = skip.size(-1) - x.size(-1)
+                x = nn.functional.pad(x, (0, diff))
+            x = torch.cat([x, skip], dim=1)
+            x = dec(x)
+
+        # Output
+        out = self.output_fc(x)  # [B, 1, seq_len]
+        out = out.permute(0, 2, 1)  # [B, seq_len, 1]
+
+        # If needed, crop or interpolate to output_seq_len
+        if out.size(1) != self.output_seq_len:
+            out = nn.functional.interpolate(
+                out.transpose(1, 2),
+                size=self.output_seq_len,
+                mode="linear",
+                align_corners=False,
+            ).transpose(1, 2)
+
+        return out
 
     def training_step(self, batch, batch_idx):
-        return self.do_step(batch, batch_idx, is_train=True)
+        return self.do_step(batch, batch_idx, True)
 
     def validation_step(self, batch, batch_idx):
-        return self.do_step(batch, batch_idx, is_train=False)
+        return self.do_step(batch, batch_idx, False)
+
+    def do_step(self, batch, batch_idx, is_train=True):
+        power, y, mask, time_deltas, ts = batch
+        y_hat = self(power, time_deltas, mask)
+        loss = nn.MSELoss()(y_hat, y)
+        if is_train:
+            self.train_mse(y_hat.squeeze(-1), y.squeeze(-1))
+            self.train_mae(y_hat.squeeze(-1), y.squeeze(-1))
+            self.log("train_loss", loss, prog_bar=True)
+            self.log("train_mse", self.train_mse, prog_bar=True)
+            self.log("train_mae", self.train_mae)
+        else:
+            self.val_mse(y_hat.squeeze(-1), y.squeeze(-1))
+            self.val_mae(y_hat.squeeze(-1), y.squeeze(-1))
+            self.log("val_loss", loss, prog_bar=True)
+            self.log("val_mse", self.val_mse, prog_bar=True)
+            self.log("val_mae", self.val_mae)
+        return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=1e-5)
-        scheduler = {
-            "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, patience=3, factor=0.5
-            ),
-            "monitor": "val_loss",
-        }
-        return [optimizer], [scheduler]
-
+        return torch.optim.AdamW(self.parameters(), lr=self.lr)

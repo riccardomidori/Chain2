@@ -1,20 +1,21 @@
 from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
-from CNN import CNNUpscaler
+from Transformer import SimpleTransformer
+from UNet import UNetUpscaler
 import torch
 
 torch.set_float32_matmul_precision("medium")
 
 
 def train():
-    batch_size = 128
+    batch_size = 64
 
-    target_frequency = 30
+    target_frequency = 15
     time_window_hours = 1
     seq_len = time_window_hours * 3600 // target_frequency
-    seq_len = 120
+    seq_len = 360
 
-    n_jobs = 12
+    n_jobs = 1
     house_limit = 100
     days = 10
 
@@ -26,7 +27,7 @@ def train():
         down_sample_to=target_frequency,
         normalization_method="standard"
     )
-    chain2_data, ned_data, power_scaling, time_delta_scaling = tsp.load_chain_2()
+    chain2_data, ned_data, power_scaling, time_delta_scaling = tsp.load_chain_2(limit=100000)
 
     train_dataset = UpScalingDataset(
         ned_data,
@@ -34,11 +35,12 @@ def train():
         sequence_len=seq_len,
         max_input_len=seq_len,  # Max irregular input length
         min_input_len=10,  # Min input length
-        overlap_ratio=0.3,  # 30% overlap
+        overlap_ratio=0.7,
         normalize=False,  # Already normalized
         phase="train",
         split_by_time=True,
         time_window_hours=time_window_hours,
+        show=False
     )
     val_dataset = UpScalingDataset(
         ned_data,
@@ -46,7 +48,7 @@ def train():
         sequence_len=seq_len,
         max_input_len=seq_len,  # Max irregular input length
         min_input_len=10,  # Min input length
-        overlap_ratio=0.3,  # 30% overlap
+        overlap_ratio=0.7,
         normalize=False,  # Already normalized
         phase="val",
         split_by_time=True,
@@ -73,11 +75,15 @@ def train():
         drop_last=False,
         persistent_workers=True,
     )
-    model = CNNUpscaler(
-        input_dim=2,
-        output_seq_len=seq_len,
-        hidden_dim=batch_size
+    model = UNetUpscaler(
+        input_dim=1,
+        base_channels=batch_size,
+        output_seq_len=seq_len
     )
+    # model = SimpleTransformer(
+    #     input_dim=2,
+    #     output_seq_len=seq_len
+    # )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
         val_loader=val_loader,
