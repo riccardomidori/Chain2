@@ -13,7 +13,10 @@ class SimplePositionalEncoding(nn.Module):
         super().__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).unsqueeze(1).float()
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float()
+            * (-torch.log(torch.tensor(10000.0)) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer("pe", pe.unsqueeze(0))  # [1, max_len, d_model]
@@ -26,67 +29,64 @@ class SimplePositionalEncoding(nn.Module):
 class SimpleTransformer(lightning.LightningModule):
     def __init__(
         self,
-        input_dim: int = 2,      # (power, time_delta)
+        input_dim: int = 2,
         d_model: int = 128,
         nhead: int = 4,
-        num_encoder_layers: int = 2,
-        num_decoder_layers: int = 2,
+        num_layers: int = 4,
         dim_feedforward: int = 256,
         output_seq_len: int = 120,
         lr: float = 1e-4,
-        method="regression"
+        dropout: float = 0.1,
     ):
         super().__init__()
         self.save_hyperparameters()
 
-        self.input_fc = nn.Linear(input_dim, d_model)
+        # Input processing
+        self.input_projection = nn.Linear(input_dim, d_model)
         self.pos_encoding = SimplePositionalEncoding(d_model)
 
+        # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
+            dropout=dropout,
             batch_first=True,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            batch_first=True,
+        # Pooling and output
+        self.global_pool = nn.AdaptiveAvgPool1d(1)  # Pool sequence dimension
+        self.fc_out = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, output_seq_len),
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
-
-        # Learnable queries for the decoder
-        self.query_embed = nn.Parameter(torch.randn(output_seq_len, d_model))
-
-        self.fc_out = nn.Linear(d_model, 1)
 
         # Metrics
         self.mse = MeanSquaredError()
         self.mae = MeanAbsoluteError()
-
         self.lr = lr
 
     def forward(self, power, time_deltas, mask):
-        # Concatenate features
+        # Combine features
         x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
-        x = self.input_fc(x)                                # [B, seq_len, d_model]
+        x = self.input_projection(x)  # [B, seq_len, d_model]
         x = self.pos_encoding(x)
 
-        # Encode irregular input
-        memory = self.encoder(x, src_key_padding_mask=~mask)
+        # Encode with proper padding mask
+        encoded = self.encoder(x, src_key_padding_mask=~mask)
 
-        # Prepare queries
-        batch_size = x.size(0)
-        queries = self.query_embed.unsqueeze(0).expand(batch_size, -1, -1)
-        queries = self.pos_encoding(queries)
+        # Global pooling (only over valid positions)
+        # Apply mask before pooling
+        masked_encoded = encoded.masked_fill(~mask.unsqueeze(-1), 0)
+        pooled = masked_encoded.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
 
-        # Decode
-        decoded = self.decoder(queries, memory, memory_key_padding_mask=~mask)
+        # Output projection
+        output = self.fc_out(pooled)  # [B, output_seq_len]
 
-        return self.fc_out(decoded)  # [B, output_seq_len, 1]
+        return output.unsqueeze(-1)  # [B, output_seq_len, 1]
 
     def training_step(self, batch, batch_idx):
         return self.do_step(batch, batch_idx, True)
@@ -95,23 +95,23 @@ class SimpleTransformer(lightning.LightningModule):
         return self.do_step(batch, batch_idx, False)
 
     def do_step(self, batch, batch_idx, is_train):
-        if is_train:
-            key = "train"
-        else:
-            key = "val"
+        key = "train" if is_train else "val"
         power, y, mask, time_deltas, ts = batch
+
         y_hat = self(power, time_deltas, mask)
         loss = nn.MSELoss()(y_hat, y)
-        self.mse(y_hat.squeeze(-1), y.squeeze(-1))
-        self.mae(y_hat.squeeze(-1), y.squeeze(-1))
+
+        y_hat_flat = y_hat.squeeze(-1)
+        y_flat = y.squeeze(-1)
+
         self.log(f"{key}_loss", loss, prog_bar=True)
-        self.log(f"{key}_mse", self.mse, prog_bar=True)
-        self.log(f"{key}_mae", self.mae)
+        self.log(f"{key}_mse", self.mse(y_hat_flat, y_flat), prog_bar=True)
+        self.log(f"{key}_mae", self.mae(y_hat_flat, y_flat))
+
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr)
-
+        return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-4)
 
 
 class PositionalEncoding(nn.Module):
@@ -126,13 +126,15 @@ class PositionalEncoding(nn.Module):
         # Standard sinusoidal positional encoding
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
 
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
 
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
         # Learnable scaling factor
         self.alpha = nn.Parameter(torch.ones(1))
@@ -163,7 +165,7 @@ class ImprovedTemporalEncoding(nn.Module):
             nn.Linear(1, d_model // 2),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(d_model // 2, d_model)
+            nn.Linear(d_model // 2, d_model),
         )
 
         # Learnable time embedding
@@ -205,14 +207,24 @@ class MultiScaleAttention(nn.Module):
         self.nhead = nhead
 
         # Multi-head attention at different scales
-        self.attention_1 = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        self.attention_2 = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        self.attention_4 = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.attention_1 = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
+        self.attention_2 = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
+        self.attention_4 = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
 
         # Convolutions for different scales
         self.conv_1 = nn.Conv1d(d_model, d_model, kernel_size=1, groups=d_model // 8)
-        self.conv_2 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, groups=d_model // 8)
-        self.conv_4 = nn.Conv1d(d_model, d_model, kernel_size=5, padding=2, groups=d_model // 8)
+        self.conv_2 = nn.Conv1d(
+            d_model, d_model, kernel_size=3, padding=1, groups=d_model // 8
+        )
+        self.conv_4 = nn.Conv1d(
+            d_model, d_model, kernel_size=5, padding=2, groups=d_model // 8
+        )
 
         # Output projection
         self.output_proj = nn.Linear(d_model * 3, d_model)
@@ -224,17 +236,31 @@ class MultiScaleAttention(nn.Module):
         batch_size, seq_len, d_model = x.shape
 
         # Multi-scale attention
-        attn_1, _ = self.attention_1(x, x, x, attn_mask=attn_mask, key_padding_mask=key_padding_mask)
+        attn_1, _ = self.attention_1(
+            x, x, x, attn_mask=attn_mask, key_padding_mask=key_padding_mask
+        )
 
         # Downsample for scale 2
-        x_2 = F.avg_pool1d(x.transpose(1, 2), kernel_size=2, stride=1, padding=1).transpose(1, 2)
-        attn_2, _ = self.attention_2(x_2, x_2, x_2, attn_mask=attn_mask, key_padding_mask=key_padding_mask)
-        attn_2 = F.interpolate(attn_2.transpose(1, 2), size=seq_len, mode='linear', align_corners=False).transpose(1, 2)
+        x_2 = F.avg_pool1d(
+            x.transpose(1, 2), kernel_size=2, stride=1, padding=1
+        ).transpose(1, 2)
+        attn_2, _ = self.attention_2(
+            x_2, x_2, x_2, attn_mask=attn_mask, key_padding_mask=key_padding_mask
+        )
+        attn_2 = F.interpolate(
+            attn_2.transpose(1, 2), size=seq_len, mode="linear", align_corners=False
+        ).transpose(1, 2)
 
         # Downsample for scale 4
-        x_4 = F.avg_pool1d(x.transpose(1, 2), kernel_size=4, stride=1, padding=2).transpose(1, 2)
-        attn_4, _ = self.attention_4(x_4, x_4, x_4, attn_mask=attn_mask, key_padding_mask=key_padding_mask)
-        attn_4 = F.interpolate(attn_4.transpose(1, 2), size=seq_len, mode='linear', align_corners=False).transpose(1, 2)
+        x_4 = F.avg_pool1d(
+            x.transpose(1, 2), kernel_size=4, stride=1, padding=2
+        ).transpose(1, 2)
+        attn_4, _ = self.attention_4(
+            x_4, x_4, x_4, attn_mask=attn_mask, key_padding_mask=key_padding_mask
+        )
+        attn_4 = F.interpolate(
+            attn_4.transpose(1, 2), size=seq_len, mode="linear", align_corners=False
+        ).transpose(1, 2)
 
         # Apply convolutional processing
         conv_1 = self.conv_1(attn_1.transpose(1, 2)).transpose(1, 2)
@@ -257,17 +283,17 @@ class ImprovedTransformerTimeSeriesUpscaler(nn.Module):
     """
 
     def __init__(
-            self,
-            input_dim: int = 1,
-            d_model: int = 256,
-            nhead: int = 8,
-            num_encoder_layers: int = 6,
-            num_decoder_layers: int = 6,
-            dim_feedforward: int = 1024,
-            output_seq_len: int = 120,
-            dropout: float = 0.1,
-            max_input_len: int = 1000,
-            use_multi_scale: bool = True,
+        self,
+        input_dim: int = 1,
+        d_model: int = 256,
+        nhead: int = 8,
+        num_encoder_layers: int = 6,
+        num_decoder_layers: int = 6,
+        dim_feedforward: int = 1024,
+        output_seq_len: int = 120,
+        dropout: float = 0.1,
+        max_input_len: int = 1000,
+        use_multi_scale: bool = True,
     ):
         super().__init__()
         self.d_model = d_model
@@ -281,7 +307,7 @@ class ImprovedTransformerTimeSeriesUpscaler(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, d_model),
-            nn.LayerNorm(d_model)
+            nn.LayerNorm(d_model),
         )
 
         # Enhanced temporal encoding
@@ -300,7 +326,7 @@ class ImprovedTransformerTimeSeriesUpscaler(nn.Module):
             dropout=dropout,
             activation="gelu",
             batch_first=True,
-            norm_first=True  # Pre-norm for better training stability
+            norm_first=True,  # Pre-norm for better training stability
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer, num_layers=num_encoder_layers
@@ -318,7 +344,7 @@ class ImprovedTransformerTimeSeriesUpscaler(nn.Module):
             dropout=dropout,
             activation="gelu",
             batch_first=True,
-            norm_first=True
+            norm_first=True,
         )
         self.transformer_decoder = nn.TransformerDecoder(
             decoder_layer, num_layers=num_decoder_layers
@@ -383,7 +409,9 @@ class ImprovedTransformerTimeSeriesUpscaler(nn.Module):
         output_queries = self.output_pos_encoding(output_queries)
 
         # Create causal mask for decoder
-        tgt_mask = self.create_causal_mask(self.output_seq_len).to(output_queries.device)
+        tgt_mask = self.create_causal_mask(self.output_seq_len).to(
+            output_queries.device
+        )
 
         # Decoder with causal masking
         decoded = self.transformer_decoder(
@@ -408,23 +436,23 @@ class PureTransformerUpscaler(lightning.LightningModule):
     """
 
     def __init__(
-            self,
-            output_sequence_length: int,
-            input_channels: int = 1,
-            d_model: int = 256,
-            nhead: int = 8,
-            num_layers: int = 6,
-            lr: float = 1e-4,
-            weight_decay: float = 0.01,
-            warmup_steps: int = 1000,
-            max_lr_multiplier: float = 10,
-            label_smoothing: float = 0.0,
-            gradient_clip_val: float = 1.0,
-            use_multi_scale: bool = True,
-            power_scaler=None,
+        self,
+        output_sequence_length: int,
+        input_channels: int = 1,
+        d_model: int = 256,
+        nhead: int = 8,
+        num_layers: int = 6,
+        lr: float = 1e-4,
+        weight_decay: float = 0.01,
+        warmup_steps: int = 1000,
+        max_lr_multiplier: float = 10,
+        label_smoothing: float = 0.0,
+        gradient_clip_val: float = 1.0,
+        use_multi_scale: bool = True,
+        power_scaler=None,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=['power_scaler'])
+        self.save_hyperparameters(ignore=["power_scaler"])
         self.power_scaler = power_scaler
         self.warmup_steps = warmup_steps
 
@@ -452,7 +480,7 @@ class PureTransformerUpscaler(lightning.LightningModule):
         self.val_mae = MeanAbsoluteError()
 
         # For tracking best validation loss
-        self.best_val_loss = float('inf')
+        self.best_val_loss = float("inf")
 
     def _quantile_loss(self, pred, target, quantile=0.5):
         """Quantile regression loss for robust training"""
@@ -499,21 +527,21 @@ class PureTransformerUpscaler(lightning.LightningModule):
 
         # Combined loss
         total_loss = (
-                mse_loss +
-                0.5 * mae_loss +
-                0.3 * huber_loss +
-                0.1 * (q25_loss + q75_loss) +
-                0.2 * freq_loss +
-                0.1 * trend_loss
+            mse_loss
+            + 0.5 * mae_loss
+            + 0.3 * huber_loss
+            + 0.1 * (q25_loss + q75_loss)
+            + 0.2 * freq_loss
+            + 0.1 * trend_loss
         )
 
         return {
-            'total_loss': total_loss,
-            'mse_loss': mse_loss,
-            'mae_loss': mae_loss,
-            'huber_loss': huber_loss,
-            'freq_loss': freq_loss,
-            'trend_loss': trend_loss,
+            "total_loss": total_loss,
+            "mse_loss": mse_loss,
+            "mae_loss": mae_loss,
+            "huber_loss": huber_loss,
+            "freq_loss": freq_loss,
+            "trend_loss": trend_loss,
         }
 
     def _frequency_loss(self, pred, target):
@@ -575,13 +603,13 @@ class PureTransformerUpscaler(lightning.LightningModule):
         self.train_mae(y_hat_flat, y_flat)
 
         # Logging
-        self.log("train_loss", losses['total_loss'], prog_bar=True)
+        self.log("train_loss", losses["total_loss"], prog_bar=True)
         self.log("train_mse", self.train_mse, prog_bar=True)
         self.log("train_mae", self.train_mae)
-        self.log("train_freq_loss", losses['freq_loss'])
-        self.log("train_trend_loss", losses['trend_loss'])
+        self.log("train_freq_loss", losses["freq_loss"])
+        self.log("train_trend_loss", losses["trend_loss"])
 
-        return losses['total_loss']
+        return losses["total_loss"]
 
     def validation_step(self, batch, batch_idx):
         # Handle different batch formats
@@ -608,17 +636,17 @@ class PureTransformerUpscaler(lightning.LightningModule):
         self.val_mae(y_hat_flat, y_flat)
 
         # Logging
-        self.log("val_loss", losses['total_loss'], prog_bar=True)
+        self.log("val_loss", losses["total_loss"], prog_bar=True)
         self.log("val_mse", self.val_mse, prog_bar=True)
         self.log("val_mae", self.val_mae, prog_bar=True)
-        self.log("val_freq_loss", losses['freq_loss'])
+        self.log("val_freq_loss", losses["freq_loss"])
 
         # Track best validation loss
-        if losses['total_loss'] < self.best_val_loss:
-            self.best_val_loss = losses['total_loss']
+        if losses["total_loss"] < self.best_val_loss:
+            self.best_val_loss = losses["total_loss"]
             self.log("best_val_loss", self.best_val_loss)
 
-        return losses['total_loss']
+        return losses["total_loss"]
 
     def configure_optimizers(self):
         # Use AdamW with better defaults
@@ -627,7 +655,7 @@ class PureTransformerUpscaler(lightning.LightningModule):
             lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,
             betas=(0.9, 0.95),  # Better for transformers
-            eps=1e-8
+            eps=1e-8,
         )
 
         # Enhanced learning rate scheduler
@@ -637,8 +665,9 @@ class PureTransformerUpscaler(lightning.LightningModule):
                 return current_step / self.warmup_steps
             else:
                 # Cosine annealing
-                progress = (current_step - self.warmup_steps) / max(1,
-                                                                    self.trainer.estimated_stepping_batches - self.warmup_steps)
+                progress = (current_step - self.warmup_steps) / max(
+                    1, self.trainer.estimated_stepping_batches - self.warmup_steps
+                )
                 return 0.5 * (1 + math.cos(math.pi * progress))
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
@@ -650,7 +679,7 @@ class PureTransformerUpscaler(lightning.LightningModule):
                 "interval": "step",
                 "frequency": 1,
                 "monitor": "val_loss",
-            }
+            },
         }
 
     def predict_step(self, batch, batch_idx):
@@ -672,11 +701,11 @@ class PureTransformerUpscaler(lightning.LightningModule):
             y_denorm = y
 
         return {
-            'predictions': y_hat_denorm,
-            'targets': y_denorm,
-            'predictions_normalized': y_hat,
-            'targets_normalized': y,
-            'input_mask': mask
+            "predictions": y_hat_denorm,
+            "targets": y_denorm,
+            "predictions_normalized": y_hat,
+            "targets_normalized": y,
+            "input_mask": mask,
         }
 
     def _denormalize_batch(self, normalized_data):
@@ -690,7 +719,9 @@ class PureTransformerUpscaler(lightning.LightningModule):
         denormalized_batch = []
         for i in range(batch_size):
             sample = normalized_data[i].detach().cpu().numpy()
-            denorm_sample = self.power_scaler.inverse_transform(sample.reshape(-1, 1)).flatten()
+            denorm_sample = self.power_scaler.inverse_transform(
+                sample.reshape(-1, 1)
+            ).flatten()
             denormalized_batch.append(torch.from_numpy(denorm_sample))
 
         return torch.stack(denormalized_batch)

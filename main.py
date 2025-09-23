@@ -2,18 +2,19 @@ from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
 from Transformer import SimpleTransformer
 from UNet import UNetUpscaler
+from CNN import CNNUpscaler
 import torch
 
 torch.set_float32_matmul_precision("medium")
 
 
 def train():
-    batch_size = 64
+    batch_size = 8
 
-    target_frequency = 15
+    target_frequency = 30
     time_window_hours = 1
     seq_len = time_window_hours * 3600 // target_frequency
-    seq_len = 360
+    seq_len = 50
 
     n_jobs = 1
     house_limit = 100
@@ -27,7 +28,7 @@ def train():
         down_sample_to=target_frequency,
         normalization_method="standard"
     )
-    chain2_data, ned_data, power_scaling, time_delta_scaling = tsp.load_chain_2(limit=100000)
+    chain2_data, ned_data, power_scaling, time_delta_scaling = tsp.load_chain_2(limit=10000)
 
     train_dataset = UpScalingDataset(
         ned_data,
@@ -35,7 +36,7 @@ def train():
         sequence_len=seq_len,
         max_input_len=seq_len,  # Max irregular input length
         min_input_len=10,  # Min input length
-        overlap_ratio=0.7,
+        overlap_ratio=0.99,
         normalize=False,  # Already normalized
         phase="train",
         split_by_time=True,
@@ -48,7 +49,7 @@ def train():
         sequence_len=seq_len,
         max_input_len=seq_len,  # Max irregular input length
         min_input_len=10,  # Min input length
-        overlap_ratio=0.7,
+        overlap_ratio=0.99,
         normalize=False,  # Already normalized
         phase="val",
         split_by_time=True,
@@ -75,15 +76,15 @@ def train():
         drop_last=False,
         persistent_workers=True,
     )
-    model = UNetUpscaler(
+    model = CNNUpscaler(
         input_dim=1,
-        base_channels=batch_size,
+        hidden_dim=batch_size,
         output_seq_len=seq_len
     )
-    # model = SimpleTransformer(
-    #     input_dim=2,
-    #     output_seq_len=seq_len
-    # )
+    model = SimpleTransformer(
+        input_dim=2,
+        output_seq_len=seq_len
+    )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
         val_loader=val_loader,

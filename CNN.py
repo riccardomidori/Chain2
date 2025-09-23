@@ -44,7 +44,8 @@ class CNNUpscaler(lightning.LightningModule):
         mask: [B, seq_len]  (ignored here, because CNN expects fixed-length input)
         """
         # Concatenate features along channel dimension
-        x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
+        # x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
+        x = power
         x = x.permute(0, 2, 1)  # [B, channels=2, seq_len]
 
         h = self.conv_net(x)  # [B, hidden_dim, seq_len]
