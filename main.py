@@ -1,6 +1,7 @@
 from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
 from CNN import CNNUpscaler
+import torch
 
 def train():
     batch_size = 128
@@ -8,7 +9,7 @@ def train():
     target_frequency = 30
     time_window_hours = 1
     seq_len = time_window_hours * 3600 // target_frequency
-    seq_len = 60
+    seq_len = 120
 
     n_jobs = 12
     house_limit = 100
