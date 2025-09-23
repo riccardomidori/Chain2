@@ -1,20 +1,18 @@
 from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
-from Transformer import SimpleTransformer, PureTransformerUpscaler
-from BaselineLSTM import LSTMUpscaler
 from CNN import CNNUpscaler
 
 def train():
-    batch_size = 16
+    batch_size = 128
 
     target_frequency = 30
     time_window_hours = 1
     seq_len = time_window_hours * 3600 // target_frequency
-    seq_len = 360
+    seq_len = 60
 
-    n_jobs = 1
-    house_limit = 10
-    days = 5
+    n_jobs = 12
+    house_limit = 100
+    days = 10
 
     print("Starting transformer-based time series upscaling...")
     tsp = TimeSeriesPreparation(
@@ -71,38 +69,16 @@ def train():
         drop_last=False,
         persistent_workers=True,
     )
-    model = PureTransformerUpscaler(
-        output_sequence_length=seq_len,
-        input_channels=2,  # power
-        d_model=batch_size,
-        nhead=8,
-        num_layers=4,
-        lr=5e-4,
-        weight_decay=0.01,
-        power_scaler=power_scaling,
-    )
-    # model = GANTimeSeriesUpscaler(
-    #     output_sequence_length=seq_len,
-    #     input_channels=1,
-    # )
-    # model = LSTMUpscaler(
-    #     input_dim=2,
-    #     hidden_dim=batch_size,
-    #     output_seq_len=seq_len
-    # )
-    model = SimpleTransformer(
-        d_model=batch_size,
+    model = CNNUpscaler(
+        input_dim=2,
         output_seq_len=seq_len,
+        hidden_dim=batch_size
     )
-    # model = CNNUpscaler(
-    #     hidden_dim=batch_size,
-    #     output_seq_len=seq_len
-    # )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
         val_loader=val_loader,
         model_visualizer=visualizer,
-        log_every_n_epochs=2,
+        log_every_n_epochs=10,
     )
     mt = ModelTrainingTesting(
         model=model,

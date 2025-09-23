@@ -34,10 +34,8 @@ class CNNUpscaler(lightning.LightningModule):
         self.fc_out = nn.Linear(hidden_dim, output_seq_len)
 
         # Metrics
-        self.train_mse = MeanSquaredError()
-        self.val_mse = MeanSquaredError()
-        self.train_mae = MeanAbsoluteError()
-        self.val_mae = MeanAbsoluteError()
+        self.mse = MeanSquaredError()
+        self.mae = MeanAbsoluteError()
 
     def forward(self, power, time_deltas, mask):
         """
@@ -60,17 +58,9 @@ class CNNUpscaler(lightning.LightningModule):
         y_hat = self(power, time_deltas, mask)
         loss = nn.MSELoss()(y_hat, y)
         if is_train:
-            self.train_mse(y_hat.squeeze(-1), y.squeeze(-1))
-            self.train_mae(y_hat.squeeze(-1), y.squeeze(-1))
             self.log("train_loss", loss, prog_bar=True)
-            self.log("train_mse", self.train_mse, prog_bar=True)
-            self.log("train_mae", self.train_mae)
         else:
-            self.val_mse(y_hat.squeeze(-1), y.squeeze(-1))
-            self.val_mae(y_hat.squeeze(-1), y.squeeze(-1))
             self.log("val_loss", loss, prog_bar=True)
-            self.log("val_mse", self.val_mse, prog_bar=True)
-            self.log("val_mae", self.val_mae)
         return loss
 
     def training_step(self, batch, batch_idx):

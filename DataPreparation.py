@@ -1,4 +1,5 @@
 import pprint
+from pathlib import Path
 from typing import Tuple, Dict
 
 import matplotlib.pyplot as plt
@@ -159,7 +160,8 @@ class TimeSeriesPreparation:
 
         return chain2_df, ned_df
 
-    def calculate_statistics(self, chain2_df, ned_df, n_houses):
+    def calculate_statistics(self, chain2_df: pl.DataFrame, ned_df: pl.DataFrame):
+        n_houses = len(chain2_df["house_id"].unique())
         """Calculate and store dataset statistics"""
         stats = {
             "n_houses_processed": n_houses,
@@ -214,12 +216,12 @@ class TimeSeriesPreparation:
         df_grouped = df.group_by_dynamic(
             index_column="timestamp", every=every, period="1s", closed="left"
         ).agg(power=pl.col("power").first())
-        # df_cross = self.power_crossings(df, power_col="power")
-        # df_down_sampled = (
-        #     pl.concat([df_grouped, df_cross])
-        #     .unique(subset=["timestamp"])
-        #     .sort("timestamp")
-        # )
+        df_cross = self.power_crossings(df, power_col="power")
+        df_down_sampled = (
+            pl.concat([df_grouped, df_cross])
+            .unique(subset=["timestamp"])
+            .sort("timestamp")
+        )
         if self.down_sample_to > 1:
             df = df.group_by_dynamic(
                 "timestamp", every=f"{self.down_sample_to}s", period="1s", closed="left"
@@ -233,37 +235,58 @@ class TimeSeriesPreparation:
             plt.show()
 
         return (
-            df_grouped.with_columns(house_id=pl.lit(house_id)),
+            df_down_sampled.with_columns(house_id=pl.lit(house_id)),
             df.with_columns(house_id=pl.lit(house_id)),
         )
 
     def load_chain_2(self):
-        users_query = (
-            "select id_abitazione as id "
-            "from tab_hourly_consumption "
-            "where timestamp>unix_timestamp(curdate()) "
-            "and id_abitazione > 2 "
-            "group by id_abitazione "
-            "order by rand(69) "
-            f"limit {self.limit}"
-        )
+        p = Path(f"data/{self.down_sample_to}")
+        if not p.exists() and not (p / "chain2.csv").exists():
+            users_query = (
+                "select id_abitazione as id "
+                "from tab_hourly_consumption "
+                "where timestamp>unix_timestamp(curdate()) "
+                "and id_abitazione > 2 "
+                "group by id_abitazione "
+                "order by rand(69) "
+                f"limit {self.limit}"
+            )
 
-        users = pl.read_database_uri(users_query, self.connection_string)
-        input_dfs, target_dfs = [], []
-        processed_houses = 0
-        for row in users.iter_rows(named=True):
-            house_id = row["id"]
-            df_input, df_target = self.chain2(house_id, n=self.n_days)
-            print(f"HouseID@{house_id} - {len(df_input)} Chain2 samples - {len(df_target)} NED_D samples")
-            if df_input is not None and df_target is not None:
-                input_dfs.append(df_input)
-                target_dfs.append(df_target)
-                processed_houses += 1
-
-        chain2_df, ned_df = (
-            pl.concat(input_dfs, how="vertical").sort(by=["house_id", "timestamp"]),
-            pl.concat(target_dfs, how="vertical").sort(by=["house_id", "timestamp"]),
-        )
+            users = pl.read_database_uri(users_query, self.connection_string)
+            input_dfs, target_dfs = [], []
+            processed_houses = 0
+            for row in users.iter_rows(named=True):
+                house_id = row["id"]
+                df_input, df_target = self.chain2(house_id, n=self.n_days)
+                print(
+                    f"HouseID@{house_id} - {len(df_input)} Chain2 samples - {len(df_target)} NED_D samples"
+                )
+                if df_input is not None and df_target is not None:
+                    input_dfs.append(df_input)
+                    target_dfs.append(df_target)
+                    processed_houses += 1
+            chain2_df, ned_df = (
+                pl.concat(input_dfs, how="vertical").sort(by=["house_id", "timestamp"]),
+                pl.concat(target_dfs, how="vertical").sort(
+                    by=["house_id", "timestamp"]
+                ),
+            )
+            p.mkdir(parents=True)
+            chain2_df.write_csv(f"data/{self.down_sample_to}/chain2.csv")
+            ned_df.write_csv(f"data/{self.down_sample_to}/ned.csv")
+        else:
+            chain2_df = pl.read_csv(
+                f"data/{self.down_sample_to}/chain2.csv"
+            ).with_columns(
+                timestamp=pl.col("timestamp").str.strptime(
+                    pl.Datetime, "%Y-%m-%dT%H:%M:%S%.f"
+                )
+            )
+            ned_df = pl.read_csv(f"data/{self.down_sample_to}/ned.csv").with_columns(
+                timestamp=pl.col("timestamp").str.strptime(
+                    pl.Datetime, "%Y-%m-%dT%H:%M:%S%.f"
+                )
+            )
 
         chain2_df = chain2_df.with_columns(
             time_delta=pl.col("timestamp")
@@ -275,8 +298,7 @@ class TimeSeriesPreparation:
 
         chain2_df, ned_df = self.normalize_data_simple(chain2_df, ned_df)
 
-        # Calculate and store statistics
-        self.calculate_statistics(chain2_df, ned_df, processed_houses)
+        self.calculate_statistics(chain2_df, ned_df)
         scaling_obj = self.get_scaling()
 
         return (
