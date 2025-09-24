@@ -14,14 +14,13 @@ class ModelVisualizer:
     A class to visualize the model's predictions against the original data.
     """
 
-    def __init__(self, model, time_interval=30):
+    def __init__(self, model):
         """
         Initializes the visualizer with the trained model.
 
         Args:
             model (lightning.LightningModule): The trained PyTorch Lightning model.
         """
-        self.time_interval = time_interval
         self.model = model
 
     def plot_predictions(self, ts, power, time_delta, mask, target, plot_file_path="predictions.png"):
@@ -31,7 +30,7 @@ class ModelVisualizer:
 
         # Move to CPU & numpy
         power_cpu = power.detach().cpu().numpy()
-        mask_cpu = mask.detach().cpu().numpy()
+        # mask_cpu = mask.detach().cpu().numpy()
         target_cpu = target.detach().cpu().numpy()
         prediction_cpu = prediction.detach().cpu().numpy()
 
@@ -43,9 +42,9 @@ class ModelVisualizer:
         prediction_cpu = prediction_cpu.squeeze(-1)
 
         # Chain2 input: only valid points
-        valid_mask = mask_cpu[sample_idx]
-        valid_power = power_cpu[sample_idx][valid_mask, 0]
-
+        # valid_mask = mask_cpu[sample_idx]
+        # valid_power = power_cpu[sample_idx][valid_mask, 0]
+        valid_power = power_cpu[sample_idx].squeeze(-1)
         plt.style.use("seaborn-v0_8-whitegrid")
 
         # Create the figure and subplots in one line, setting the figure size and sharing the x-axis.
@@ -106,10 +105,10 @@ class VisualizationCallback(Callback):
                 batch = next(self.val_iter)
 
             # Unpack the batch tuple. Make sure the order matches your Dataset.__getitem__
-            power, target, mask, time_delta, ts = batch
+            power, target, ts = batch
             power = power.to(pl_module.device)
-            time_delta = time_delta.to(pl_module.device)
-            mask = mask.to(pl_module.device)
+            # time_delta = time_delta.to(pl_module.device)
+            # mask = mask.to(pl_module.device)
             target = target.to(pl_module.device)
 
             # Create visualization for the first sample in the batch
@@ -117,8 +116,8 @@ class VisualizationCallback(Callback):
             self.visualizer.plot_predictions(
                 ts,
                 power,
-                time_delta,
-                mask,
+                None,
+                None,
                 target,
                 plot_file_path=f"epoch_{trainer.current_epoch}_predictions.png",
             )

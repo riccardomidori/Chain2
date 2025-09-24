@@ -37,7 +37,7 @@ class UNetUpscaler(pl.LightningModule):
         self.encoders = nn.ModuleList()
         self.pools = nn.ModuleList()
         channels = [input_dim]  # Track channel progression
-
+        pool_size = output_seq_len
         # Build encoder layers
         for d in range(depth):
             in_ch = channels[-1]
@@ -45,6 +45,11 @@ class UNetUpscaler(pl.LightningModule):
             self.encoders.append(ConvBlock(in_ch, out_ch))
             self.pools.append(nn.MaxPool1d(2))
             channels.append(out_ch)
+            pool_size = pool_size // 2
+            if pool_size == 1:
+                print(f"Stopped at depth {d} for pool_size reached 1")
+                depth = d
+                break
 
         # Bottleneck
         bottleneck_in = channels[-1]
@@ -130,8 +135,8 @@ class UNetUpscaler(pl.LightningModule):
         return self.do_step(batch, batch_idx, False)
 
     def do_step(self, batch, batch_idx, is_train=True):
-        power, y, mask, time_deltas, ts = batch
-        y_hat = self(power, time_deltas, mask)
+        power, y, ts = batch
+        y_hat = self(power, None, None)
         loss = nn.MSELoss()(y_hat, y)
         if is_train:
             self.train_mse(y_hat.squeeze(-1), y.squeeze(-1))

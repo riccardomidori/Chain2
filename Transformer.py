@@ -41,9 +41,13 @@ class SimpleTransformer(lightning.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        # Input processing
-        self.input_projection = nn.Linear(input_dim, d_model)
-        self.pos_encoding = SimplePositionalEncoding(d_model)
+        self.save_hyperparameters()
+        self.d_model = d_model
+        self.output_seq_len = output_seq_len
+
+        # Input embeddings for the single interpolated sequence
+        self.input_embedding = nn.Linear(input_dim, d_model)
+        self.pos_encoding = SimplePositionalEncoding(d_model, max_len=output_seq_len)
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -53,15 +57,33 @@ class SimpleTransformer(lightning.LightningModule):
             dropout=dropout,
             batch_first=True,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers
+        )
 
-        # Pooling and output
-        self.global_pool = nn.AdaptiveAvgPool1d(1)  # Pool sequence dimension
-        self.fc_out = nn.Sequential(
+        # Learnable output queries (for decoder)
+        self.output_queries = nn.Parameter(torch.randn(output_seq_len, d_model))
+        self.output_pos_encoding = SimplePositionalEncoding(
+            d_model, max_len=output_seq_len
+        )
+
+        # Transformer decoder
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer, num_layers=num_layers
+        )
+
+        # Output projection
+        self.output_projection = nn.Sequential(
             nn.Linear(d_model, dim_feedforward),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, output_seq_len),
+            nn.Linear(dim_feedforward, 1),
         )
 
         # Metrics
@@ -69,37 +91,36 @@ class SimpleTransformer(lightning.LightningModule):
         self.mae = MeanAbsoluteError()
         self.lr = lr
 
-    def forward(self, power, time_deltas, mask):
-        # Combine features
-        x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
-        x = self.input_projection(x)  # [B, seq_len, d_model]
+    def forward(self, x, time_delta, mask):
+        # x shape: [batch, output_seq_len, 1]
+
+        # Embed and add positional encoding
+        x = self.input_embedding(x)  # [B, seq_len, d_model]
         x = self.pos_encoding(x)
 
-        # Encode with proper padding mask
-        encoded = self.encoder(x, src_key_padding_mask=~mask)
+        # Encoder pass
+        memory = self.transformer_encoder(x)  # No mask needed
 
-        # Global pooling (only over valid positions)
-        # Apply mask before pooling
-        masked_encoded = encoded.masked_fill(~mask.unsqueeze(-1), 0)
-        pooled = masked_encoded.sum(dim=1) / mask.sum(dim=1, keepdim=True).float()
+        # Prepare decoder queries
+        batch_size = x.size(0)
+        output_queries = self.output_queries.unsqueeze(0).repeat(batch_size, 1, 1)
+        output_queries = self.output_pos_encoding(output_queries)
 
-        # Output projection
-        output = self.fc_out(pooled)  # [B, output_seq_len]
+        # Decoder pass
+        decoded = self.transformer_decoder(tgt=output_queries, memory=memory)
 
-        return output.unsqueeze(-1)  # [B, output_seq_len, 1]
-
-    def training_step(self, batch, batch_idx):
-        return self.do_step(batch, batch_idx, True)
-
-    def validation_step(self, batch, batch_idx):
-        return self.do_step(batch, batch_idx, False)
+        # Project to output dimension
+        output = self.output_projection(decoded)  # [B, output_seq_len, 1]
+        return output
 
     def do_step(self, batch, batch_idx, is_train):
         key = "train" if is_train else "val"
-        power, y, mask, time_deltas, ts = batch
+        x, y, ts = batch
 
-        y_hat = self(power, time_deltas, mask)
-        loss = nn.MSELoss()(y_hat, y)
+        y_hat = self(x, None, None)  # Add a feature dimension for the model
+        loss = nn.MSELoss()(
+            y_hat, y
+        )  # Add a feature dimension for the loss
 
         y_hat_flat = y_hat.squeeze(-1)
         y_flat = y.squeeze(-1)
@@ -109,6 +130,12 @@ class SimpleTransformer(lightning.LightningModule):
         self.log(f"{key}_mae", self.mae(y_hat_flat, y_flat))
 
         return loss
+
+    def training_step(self, batch, batch_idx):
+        return self.do_step(batch, batch_idx, is_train=True)
+
+    def validation_step(self, batch, batch_idx):
+        return self.do_step(batch, batch_idx, is_train=False)
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-4)

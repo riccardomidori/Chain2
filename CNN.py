@@ -13,11 +13,11 @@ class CNNUpscaler(lightning.LightningModule):
         kernel_size: int = 3,
         output_seq_len: int = 120,
         lr: float = 1e-3,
-        method="regression",
+        method="interpolation",
     ):
         super().__init__()
         self.save_hyperparameters()
-
+        self.method = method
         layers = []
         in_channels = input_dim
         for _ in range(num_layers):
@@ -55,8 +55,12 @@ class CNNUpscaler(lightning.LightningModule):
         return out.unsqueeze(-1)  # [B, output_seq_len, 1]
 
     def do_step(self, batch, batch_idx, is_train=True):
-        power, y, mask, time_deltas, ts = batch
-        y_hat = self(power, time_deltas, mask)
+        if self.method == "interpolation":
+            power, y, ts = batch
+            y_hat = self(power, None, None)
+        else:
+            power, y, mask, time_deltas, ts = batch
+            y_hat = self(power, time_deltas, mask)
         loss = nn.MSELoss()(y_hat, y)
         if is_train:
             self.log("train_loss", loss, prog_bar=True)
