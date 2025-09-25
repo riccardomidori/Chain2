@@ -12,7 +12,7 @@ BATCH_SIZE = 128
 N_JOBS = 1
 HOUSE_LIMIT = 100
 DAYS = 10
-LOADING_RATIO = 0.1
+LOADING_RATIO = 0.4
 
 def train():
     print("Starting time series up-scaling")
