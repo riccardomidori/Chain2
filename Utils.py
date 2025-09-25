@@ -157,7 +157,7 @@ class ModelTrainingTesting:
         self.logger = XMLLogger("ModelTrainingTesting").logger
         self.model_checkpoint = ModelCheckpoint(
             dirpath="checkpoints",
-            filename=model_name + f"_{monitor}:.2f.ckpt",
+            filename="{epoch}-{val_loss:.4f}",
             save_top_k=1,
             monitor=monitor,
             mode="min"
