@@ -110,9 +110,9 @@ if __name__ == "__main__":
     from sklearn.metrics import mean_squared_error, mean_absolute_error
     import polars as pl
 
-    TARGET_FREQ = 10
+    TARGET_FREQ = 5
     TIME_WINDOW_HOURS = 2
-    SEQ_LEN = 90
+    SEQ_LEN = 30
 
     tsp = TimeSeriesPreparation(
         down_sample_to=TARGET_FREQ, limit=2, n_days=1, to_normalize=False
@@ -124,7 +124,7 @@ if __name__ == "__main__":
         sequence_len=SEQ_LEN,  # Target sequence length
         max_input_len=SEQ_LEN,  # Max irregular input length
         min_input_len=min(10, SEQ_LEN),  # Min input length
-        overlap_ratio=0.99,  # 30% overlap
+        overlap_ratio=0.3,  # 30% overlap
         normalize=False,  # Already normalized
         phase="train",
         split_by_time=True,
@@ -144,7 +144,8 @@ if __name__ == "__main__":
         upscaled_linear = linear_baseline(power, time_deltas)
         fig, ax = plt.subplots()
         ax.plot(y.squeeze(), label="True", linewidth=3)
-        ax.plot(x.squeeze(), label="Input")
+        # ax.plot(x.squeeze(), label="Input")
+        ax.plot(y.squeeze() - upscaled_linear, label="Residual")
         ax.plot(upscaled_linear, label="Linear")
         plt.legend()
         plt.show()

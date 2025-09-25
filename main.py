@@ -1,90 +1,89 @@
 from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
-from Transformer import SimpleTransformer
-from UNet import UNetUpscaler
-from CNN import CNNUpscaler
 import torch
+from ResidualUpscaler import ResidualUpscaler
 
 torch.set_float32_matmul_precision("medium")
 
+TARGET_FREQUENCY = 5
+TIME_WINDOW_MINUTES = 30
+SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
+BATCH_SIZE = 128
+N_JOBS = 1
+HOUSE_LIMIT = 100
+DAYS = 10
+LOADING_RATIO = 0.1
 
 def train():
-    batch_size = 128
-
-    target_frequency = 5
-    seq_len = 120
-
-    n_jobs = 1
-    house_limit = 100
-    days = 10
-
-    print("Starting transformer-based time series upscaling...")
+    print("Starting time series up-scaling")
     tsp = TimeSeriesPreparation(
         to_normalize=True,
-        limit=house_limit,
-        n_days=days,
-        down_sample_to=target_frequency,
+        limit=HOUSE_LIMIT,
+        n_days=DAYS,
+        down_sample_to=TARGET_FREQUENCY,
         normalization_method="standard",
     )
-    chain2_data, ned_data, power_scaling, time_delta_scaling = tsp.load_chain_2(
-        limit=70000
-    )
+    chain2_data, ned_data = tsp.load_chain_2(ratio=LOADING_RATIO)
 
     train_dataset = UpScalingDataset(
         ned_data,
         chain2_data,
-        sequence_len=seq_len,
-        max_input_len=seq_len,  # Max irregular input length
-        min_input_len=10,  # Min input length
-        overlap_ratio=0.85,  # 30% overlap
+        sequence_len=SEQ_LEN,
+        max_input_len=SEQ_LEN,
+        min_input_len=10,
+        overlap_ratio=0.8,
         normalize=False,  # Already normalized
         phase="train",
         split_by_time=True,
         show=False,
         to_interpolate=True,
-        only_spike=True,
+        only_spike=False,
+        split_ratio=0.7
     )
     val_dataset = UpScalingDataset(
         ned_data,
         chain2_data,
-        sequence_len=seq_len,
-        max_input_len=seq_len,  # Max irregular input length
-        min_input_len=10,  # Min input length
-        overlap_ratio=0.4,
+        sequence_len=SEQ_LEN,
+        max_input_len=SEQ_LEN,
+        min_input_len=10,
+        overlap_ratio=0.7,
         normalize=False,  # Already normalized
         phase="val",
         split_by_time=True,
         show=False,
         to_interpolate=True,
         only_spike=True,
+        split_ratio=0.7
     )
     print(f"Train Dataset: Samples={len(train_dataset.dataset)}")
     print(f"Val Dataset: Samples={len(val_dataset.dataset)}")
 
+    if any([len(train_dataset) < 1, len(val_dataset) < 1]):
+        print("Train or validation datasets are empty")
+        exit()
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=n_jobs,
+        num_workers=N_JOBS,
         pin_memory=True,  # Faster GPU transfer
         drop_last=True,  # Ensures consistent batch sizes
         persistent_workers=True,
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=n_jobs,
+        num_workers=N_JOBS,
         pin_memory=True,
         drop_last=False,
         persistent_workers=True,
     )
-    # model = CNNUpscaler(input_dim=1, hidden_dim=batch_size, output_seq_len=seq_len)
-    model = UNetUpscaler(
+    model = ResidualUpscaler(
         input_dim=1,
-        output_seq_len=seq_len,
-        base_channels=32,
-        depth=2
+        hidden_dim=BATCH_SIZE,
+        num_blocks=4
     )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
@@ -92,15 +91,16 @@ def train():
         model_visualizer=visualizer,
         log_every_n_epochs=5,
     )
+    callbacks = []
     mt = ModelTrainingTesting(
         model=model,
         train_dataloader=train_loader,
         test_dataloader=val_loader,
         epochs=500,
         method="regression",
-        model_name=f"UpScalingTimeSeries",
-        callbacks=[visualization_callback],
-        monitor="val_recon_loss",
+        model_name=f"ResidualUpscaler_{SEQ_LEN}",
+        callbacks=callbacks,
+        monitor="val_loss",
     )
     mt.train()
 

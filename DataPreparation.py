@@ -31,9 +31,6 @@ class TimeSeriesPreparation:
         self.limit = limit
         self.n_days = n_days
 
-        self.power_scaler = self.get_scaler()
-        self.time_delta_scaler = StandardScaler()
-
     @staticmethod
     def power_crossings(
         df: pl.DataFrame, step=300, time_col="timestamp", power_col="p"
@@ -49,31 +46,6 @@ class TimeSeriesPreparation:
             [time_col, power_col]
         )
 
-    def get_scaler(self):
-        """Get the appropriate scaler based on method"""
-        if self.normalization_method == "standard":
-            return StandardScaler()
-        elif self.normalization_method == "minmax":
-            return MinMaxScaler()
-        elif self.normalization_method == "robust":
-            return RobustScaler()
-        else:
-            raise ValueError(
-                f"Unknown normalization method: {self.normalization_method}"
-            )
-
-    def denormalize_power(self, normalized_power):
-        """Denormalize power values back to original scale"""
-        if hasattr(normalized_power, "numpy"):
-            power_array = normalized_power.detach().cpu().numpy()
-        else:
-            power_array = np.array(normalized_power)
-
-        if power_array.ndim == 1:
-            power_array = power_array.reshape(-1, 1)
-
-        return self.power_scaler.inverse_transform(power_array).flatten()
-
     def normalize_data_simple(self, chain2_df: pl.DataFrame, ned_df: pl.DataFrame):
         if self.to_normalize:
             min_, max_ = ned_df["power"].min(), ned_df["power"].quantile(quantile=0.98)
@@ -81,7 +53,7 @@ class TimeSeriesPreparation:
                 original_power=pl.col("power"),
                 original_time_delta=pl.col("time_delta"),
                 power=pl.col("power").clip(0, max_) / max_,
-                time_delta=pl.col("time_delta")
+                time_delta=pl.col("time_delta"),
             )
             ned_df = ned_df.with_columns(
                 original_power=pl.col("power"),
@@ -98,64 +70,6 @@ class TimeSeriesPreparation:
                 original_power=pl.col("power"),
                 power=pl.col("power"),
             )
-        return chain2_df, ned_df
-
-    def normalize_data(
-        self, chain2_df: pl.DataFrame, ned_df: pl.DataFrame
-    ) -> Tuple[pl.DataFrame, pl.DataFrame]:
-        """
-        Improved normalization strategy
-        """
-        # Collect all power values for consistent normalization
-        all_power_chain2 = chain2_df["power"].to_numpy()
-        all_power_ned = ned_df["power"].to_numpy()
-        all_power = np.concatenate([all_power_chain2, all_power_ned])
-
-        # Fit power scaler on combined data
-        self.power_scaler.fit(all_power.reshape(-1, 1))
-
-        # Normalize power values
-        chain2_power_norm = self.power_scaler.transform(
-            all_power_chain2.reshape(-1, 1)
-        ).flatten()
-
-        ned_power_norm = self.power_scaler.transform(
-            all_power_ned.reshape(-1, 1)
-        ).flatten()
-
-        # Handle time deltas
-        time_deltas = chain2_df["time_delta"].to_numpy()
-        time_deltas_filtered = time_deltas[time_deltas > 0]  # Remove zeros
-
-        if len(time_deltas_filtered) > 0:
-            self.time_delta_scaler.fit(time_deltas_filtered.reshape(-1, 1))
-            time_deltas_norm = np.zeros_like(time_deltas)
-
-            # Only normalize non-zero time deltas
-            non_zero_mask = time_deltas > 0
-            time_deltas_norm[non_zero_mask] = self.time_delta_scaler.transform(
-                time_deltas[non_zero_mask].reshape(-1, 1)
-            ).flatten()
-        else:
-            time_deltas_norm = time_deltas
-
-        # Update dataframes with normalized values
-        chain2_df = chain2_df.with_columns(
-            [
-                pl.Series("power", chain2_power_norm),
-                pl.Series("time_delta", time_deltas_norm),
-                pl.Series("original_power", all_power_chain2),
-                pl.Series("original_time_delta", time_deltas),
-            ]
-        )
-
-        ned_df = ned_df.with_columns(
-            [
-                pl.Series("power", ned_power_norm),
-                pl.Series("original_power", all_power_ned),
-            ],
-        )
-
         return chain2_df, ned_df
 
     def calculate_statistics(self, chain2_df: pl.DataFrame, ned_df: pl.DataFrame):
@@ -197,7 +111,7 @@ class TimeSeriesPreparation:
         print("\n")
         pprint.pprint(stats)
         print("\n")
-        print(f"Normalization: {self.normalization_method}")
+        print(f"Normalization: {self.normalization_method}" f"\n")
 
     def chain2(self, house_id, show=False, every="60s", n=1):
         query = (
@@ -237,7 +151,7 @@ class TimeSeriesPreparation:
             df.with_columns(house_id=pl.lit(house_id)),
         )
 
-    def load_chain_2(self, limit=-1):
+    def load_chain_2(self, limit=-1, ratio=-1.0):
         p = Path(f"data/{self.down_sample_to}")
         if not p.exists() and not (p / "chain2.csv").exists():
             users_query = (
@@ -286,8 +200,18 @@ class TimeSeriesPreparation:
                 )
             )
             if limit > 0:
+                ratio = -1
+                print(
+                    f"Loaded {limit} rows of original: {limit}/{len(ned_df)} rows ({limit / len(ned_df)*100}%)"
+                )
                 chain2_df = chain2_df.limit(limit)
                 ned_df = ned_df.limit(limit)
+            if ratio > 0:
+                print(
+                    f"Loaded {ratio*100}% of original: {int(len(ned_df)*ratio)}/{len(ned_df)} rows"
+                )
+                chain2_df = chain2_df.limit(int(len(chain2_df) * ratio))
+                ned_df = ned_df.limit(int(len(ned_df) * ratio))
 
         chain2_df = chain2_df.with_columns(
             time_delta=pl.col("timestamp")
@@ -300,21 +224,11 @@ class TimeSeriesPreparation:
         chain2_df, ned_df = self.normalize_data_simple(chain2_df, ned_df)
 
         self.calculate_statistics(chain2_df, ned_df)
-        scaling_obj = self.get_scaling()
 
         return (
             chain2_df,
             ned_df,
-            scaling_obj["power_scaler"],
-            scaling_obj["time_delta_scaler"],
         )
-
-    def get_scaling(self) -> Dict:
-        """Return fitted scalers for use in models"""
-        return {
-            "power_scaler": self.power_scaler,
-            "time_delta_scaler": self.time_delta_scaler,
-        }
 
 
 class UpScalingDataset(Dataset):
@@ -356,19 +270,14 @@ class UpScalingDataset(Dataset):
         self.show = show
         self.only_spike = only_spike
         self.to_interpolate = to_interpolate
-
         self.interpolate_model = InterpolationBaseline(self.sequence_len, "linear")
 
-        self.power_scaler = StandardScaler()
-        self.time_delta_scaler = StandardScaler()
-
         self.validate_inputs()
-
-        self.create_dataset_simple()
+        self.create_dataset()
 
     def get_time_splits(
         self, current_target: pl.DataFrame, timestamp_col="timestamp"
-    ) -> Tuple[pl.Series, pl.Series]:
+    ) -> Tuple[pl.Series, pl.Series, int]:
         """Split timestamps for train/val to avoid data leakage"""
         if not self.split_by_time:
             # Random split (less recommended)
@@ -377,6 +286,7 @@ class UpScalingDataset(Dataset):
             return (
                 current_target[indices[:n_train]][timestamp_col],
                 current_target[indices[n_train:]][timestamp_col],
+                0
             )
 
         # Time-based split (recommended)
@@ -385,23 +295,12 @@ class UpScalingDataset(Dataset):
             train_mask=pl.col(timestamp_col) <= split_time,
             val_mask=pl.col(timestamp_col) >= split_time,
         )
+        idx = mask.with_row_index().filter(pl.col("train_mask"))[-1, 0]
         return (
             mask.filter(pl.col("train_mask"))[timestamp_col],
             mask.filter(pl.col("val_mask"))[timestamp_col],
+            idx
         )
-
-    @staticmethod
-    def calculate_time_deltas(timestamps: np.ndarray) -> np.ndarray:
-        """Calculate time deltas in seconds"""
-        if len(timestamps) <= 1:
-            return np.array([0.0])
-
-        # Convert to seconds and calculate deltas
-        time_deltas = np.diff(timestamps.astype("datetime64[s]").astype(float))
-        # Add zero for first element to match sequence length
-        time_deltas = np.concatenate([[0.0], time_deltas])
-
-        return time_deltas
 
     def validate_inputs(self):
         """Validate input parameters and data"""
@@ -426,167 +325,6 @@ class UpScalingDataset(Dataset):
             assert col in self.chain2.columns, f"Missing column {col} in chain2"
 
     def create_dataset(self):
-        house_ids = self.ned_d["house_id"].unique()
-        for house_id in house_ids:
-            house_ned = self.ned_d.filter(pl.col("house_id").eq(house_id))
-            house_chain = self.chain2.filter(pl.col("house_id").eq(house_id))
-
-            for i in range(0, len(house_ned) - self.sequence_len, self.sequence_len):
-                curr_ned = house_ned[i : i + self.sequence_len]
-                start_time = curr_ned[0]["timestamp"]
-                end_time = curr_ned[-1]["timestamp"]
-                curr_chain = house_chain.filter(
-                    (pl.col("timestamp") >= start_time)
-                    & (pl.col("timestamp") <= end_time)
-                )
-                if len(curr_chain) == 0:
-                    continue  # Skip windows with no Chain2 data
-                target = curr_ned.select(["power"]).to_numpy()
-
-                curr_chain_np = (
-                    curr_chain.select(["power", "time_delta"])
-                    .to_numpy()
-                    .astype(np.float32)
-                )
-
-                if len(curr_chain_np) > self.max_len:
-                    # Truncate the sequence if it's too long
-                    # Keep the most recent data points, as they are often more relevant.
-                    curr_chain_np = curr_chain_np[-self.max_len :]
-
-                current_len = len(curr_chain_np)
-
-                # Pad the input sequence to the max_chain2_len
-                padded_input = np.zeros(
-                    (self.max_len, curr_chain_np.shape[1]), dtype=np.float32
-                )
-                padded_input[:current_len, :] = curr_chain_np
-
-                # Create the corresponding mask
-                mask = np.zeros(self.max_len, dtype=bool)
-                mask[:current_len] = True
-                ts = (
-                    curr_ned.with_columns(ts_int=pl.col("timestamp").dt.timestamp())
-                    .select("ts_int")
-                    .to_numpy()
-                )
-                to_add = {
-                    "ts": ts,
-                    "input": torch.from_numpy(padded_input).float(),
-                    "target": torch.from_numpy(target)
-                    .squeeze(-1)
-                    .float(),  # Squeeze to remove trailing dim
-                    "mask": torch.from_numpy(
-                        ~mask
-                    ).float(),  # Invert the mask for Transformer,
-                }
-                # to_add["input_shape"] = to_add["input"].shape
-                # to_add["target_shape"] = to_add["target"].shape
-                # to_add["mask_shape"] = to_add["mask"].shape
-                self.dataset.append(to_add)
-
-    def create_dataset_2(self):
-        print(f"Creation dataset for {self.phase}")
-
-        house_ids = self.ned_d["house_id"].unique()
-        self.dataset: list[dict] = []
-
-        # Second pass: create sequences
-        samples = 0
-        for house_id in house_ids:
-            house_ned = self.ned_d.filter(pl.col("house_id").eq(house_id)).sort(
-                "timestamp"
-            )
-            house_chain = self.chain2.filter(pl.col("house_id").eq(house_id)).sort(
-                "timestamp"
-            )
-
-            if len(house_ned) < self.sequence_len:
-                continue
-
-            train_times, val_times = self.get_time_splits(house_ned)
-            valid_times_set = set(
-                train_times.to_list() if self.phase == "train" else val_times.to_list()
-            )
-
-            # Create sequences
-            step_size = max(1, int(self.sequence_len * (1 - self.overlap_ratio)))
-
-            for i in range(0, len(house_ned) - self.sequence_len + 1, step_size):
-                curr_ned = house_ned[i : i + self.sequence_len]
-                start_time = curr_ned[0]["timestamp"].item()
-                end_time = curr_ned[-1]["timestamp"].item()
-
-                # Time-based filtering
-                if self.split_by_time and start_time not in valid_times_set:
-                    continue
-
-                # Add time window buffer
-                time_buffer_seconds = Timedelta(hours=self.time_window_hours)
-                search_start = start_time - time_buffer_seconds
-                search_end = end_time + time_buffer_seconds
-
-                curr_chain = house_chain.filter(
-                    (pl.col("timestamp") >= search_start)
-                    & (pl.col("timestamp") <= search_end)
-                )
-
-                if len(curr_chain) < self.min_input_len:
-                    continue
-
-                target_power = curr_ned["power"].to_numpy().astype(np.float32)
-                chain_power = curr_chain["power"].to_numpy().astype(np.float32)
-                chain_time_deltas = (
-                    curr_chain["time_delta"].to_numpy().astype(np.float32)
-                )
-
-                # Truncate if too long (keep most recent data)
-                if len(chain_power) > self.max_input_len:
-                    chain_power = chain_power[-self.max_input_len :]
-                    chain_time_deltas = chain_time_deltas[-self.max_input_len :]
-
-                current_len = len(chain_power)
-
-                # Create padded input sequence
-                padded_input_power = np.zeros(self.max_input_len, dtype=np.float32)
-                padded_input_power[:current_len] = chain_power
-
-                padded_input_td = np.zeros(self.max_input_len, dtype=np.float32)
-                padded_input_td[:current_len] = chain_time_deltas
-
-                # Create attention mask
-                attention_mask = np.zeros(self.max_input_len, dtype=bool)
-                attention_mask[:current_len] = True
-                ts = (
-                    curr_ned.with_columns(ts_int=pl.col("timestamp").dt.timestamp())
-                    .select("ts_int")
-                    .to_numpy()
-                )
-                sample = {
-                    "power": torch.from_numpy(padded_input_power).float().unsqueeze(-1),
-                    "time_delta": torch.from_numpy(padded_input_td)
-                    .float()
-                    .unsqueeze(-1),
-                    "mask": torch.from_numpy(attention_mask).bool(),
-                    "target": torch.from_numpy(target_power).float().unsqueeze(-1),
-                    "ts": ts,
-                }
-                self.dataset.append(sample)
-                samples += 1
-
-            print(f"\t\tHouse@{house_id} added {samples} samples")
-            samples = 0
-        print(f"Total samples added: {len(self.dataset)}")
-        if len(self.dataset) > 0:
-            print(
-                f"\tSample example:",
-                {
-                    k: v.shape if hasattr(v, "shape") else v
-                    for k, v in self.dataset[0].items()
-                },
-            )
-
-    def create_dataset_simple(self):
         """
         Simpler dataset creation:
         - Align each target (ned_d) window with chain2 in the same time range.
@@ -600,34 +338,30 @@ class UpScalingDataset(Dataset):
         house_ids = self.ned_d["house_id"].unique()
         step_size = max(1, int(self.sequence_len * (1 - self.overlap_ratio)))
         print(
-            f"[create_dataset_simple] Building dataset for {self.phase} step size {step_size}"
+            f"[create_dataset] Building dataset for {self.phase} step size {step_size}"
         )
 
         for house_id in house_ids:
             house_ned = self.ned_d.filter(pl.col("house_id") == house_id).sort(
                 "timestamp"
             )
+            if len(house_ned) < self.sequence_len:
+                continue
             house_chain = self.chain2.filter(pl.col("house_id") == house_id).sort(
                 "timestamp"
             )
-
-            if len(house_ned) < self.sequence_len:
-                continue
-
             # Train/val split
-            train_times, val_times = self.get_time_splits(house_ned)
-            valid_times_set = set(
-                train_times.to_list() if self.phase == "train" else val_times.to_list()
+            train_times, val_times, idx_split = self.get_time_splits(house_ned)
+            loop_range = (
+                range(0, len(train_times) - self.sequence_len + 1, step_size)
+                if self.phase == "train"
+                else range(idx_split, len(house_ned) - self.sequence_len + 1, step_size)
             )
 
-            for i in range(0, len(house_ned) - self.sequence_len + 1, step_size):
+            for i in loop_range:
                 curr_ned = house_ned[i : i + self.sequence_len]
                 start_time = curr_ned[0]["timestamp"].item()
                 end_time = curr_ned[-1]["timestamp"].item()
-
-                # Enforce time-based split
-                if self.split_by_time and start_time not in valid_times_set:
-                    continue
 
                 # Take only chain2 points strictly within this window
                 curr_chain = house_chain.filter(
@@ -637,19 +371,6 @@ class UpScalingDataset(Dataset):
                 has_spike = not curr_chain.filter(
                     pl.col("original_power").gt(300)
                 ).is_empty()
-                if self.show and (self.only_spike and has_spike or not self.only_spike):
-                    print(curr_ned)
-                    print(curr_chain)
-                    fig, ax = plt.subplots(2, sharex=True)
-                    curr_ned.to_pandas().set_index("timestamp")["power"].plot(
-                        ax=ax[0], color="red", label="NED_D"
-                    )
-                    curr_chain.to_pandas().set_index("timestamp")["power"].plot(
-                        ax=ax[1], color="blue", label="Chain2"
-                    )
-                    ax[0].legend()
-                    ax[1].legend()
-                    plt.show()
 
                 if len(curr_chain) > self.max_input_len:
                     curr_chain = curr_chain[-self.max_input_len :]
@@ -659,6 +380,12 @@ class UpScalingDataset(Dataset):
 
                 if self.only_spike and not has_spike:
                     continue
+
+                if self.show:
+                    fig, ax = plt.subplots()
+                    curr_ned.to_pandas().set_index("timestamp", drop=True)["original_power"].plot(ax=ax, color="red")
+                    curr_chain.to_pandas().set_index("timestamp", drop=True)["original_power"].plot(ax=ax, color="blue")
+                    plt.show()
 
                 # Extract arrays
                 target_power = curr_ned["power"].to_numpy().astype(np.float32)
@@ -680,9 +407,6 @@ class UpScalingDataset(Dataset):
                     chain_power = self.interpolate_model.predict(
                         chain_power, chain_time_deltas
                     )
-                    # plt.plot(chain_power)
-                    # plt.plot(target_power)
-                    # plt.show()
                     sample = {
                         "power": torch.from_numpy(chain_power).float().unsqueeze(-1),
                         "target": torch.from_numpy(target_power).float().unsqueeze(-1),
@@ -710,7 +434,7 @@ class UpScalingDataset(Dataset):
                     }
                 self.dataset.append(sample)
 
-        print(f"[create_dataset_simple] Total samples: {len(self.dataset)}")
+        print(f"[create_dataset] Total samples: {len(self.dataset)}")
         if len(self.dataset) > 0:
             print(
                 "Sample example:",
@@ -720,47 +444,45 @@ class UpScalingDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(
-        self, idx: int
-    ):
+    def __getitem__(self, idx: int):
         """
         Returns:
-            x: Input features [max_input_len, 2] (power, time_delta)
+            x: Input features [max_input_len, 1] (power) if interpolate else [max_input_len, 2] (power, time_delta)
             y: Target sequence [sequence_len]
-            mask: Attention mask [max_input_len] (True for valid positions)
-            time_deltas: Actual time deltas [max_input_len] (for temporal encoding)
+            mask: Attention mask [max_input_len] (True for valid positions) if not_interpolate
+            time_deltas: Actual time deltas [max_input_len] (for temporal encoding) if not_interpolate
             ts: timestamp for plotting
         """
         sample = self.dataset[idx]
         if self.to_interpolate:
             return sample["power"], sample["target"], sample["ts"]
         else:
-            power = sample["power"]  # [max_input_len, 1]
-            time_deltas = sample["time_delta"]  # [max_input_len]
-            y = sample["target"]  # [sequence_len]
-            mask = sample["mask"]  # [max_input_len]
-            ts = sample["ts"]
-            return power, y, mask, time_deltas, ts
+            return (
+                sample["power"],
+                sample["target"],
+                sample["mask"],
+                sample["time_delta"],
+                sample["ts"],
+            )
 
 
 if __name__ == "__main__":
-    TARGET_FREQ = 30
-    TIME_WINDOW_HOURS = 2
-    SEQ_LEN = 7
+    TARGET_FREQ = 5
+    TIME_WINDOW_MINUTES = 30
+    SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQ
     tsp = TimeSeriesPreparation(
         down_sample_to=TARGET_FREQ, limit=2, n_days=1, to_normalize=False
     )
-    chain2, ned_d, power_scaling, time_delta_scaling = tsp.load_chain_2()
+    chain2, ned_d = tsp.load_chain_2(ratio=0.01)
     train_dataset = UpScalingDataset(
         ned_d=ned_d,
         chain2=chain2,
         sequence_len=SEQ_LEN,  # Target sequence length
         max_input_len=SEQ_LEN,  # Max irregular input length
         min_input_len=min(10, SEQ_LEN),  # Min input length
-        overlap_ratio=0.3,  # 30% overlap
+        overlap_ratio=0.9,  # 30% overlap
         normalize=False,  # Already normalized
         phase="train",
         split_by_time=True,
-        time_window_hours=TIME_WINDOW_HOURS,
         show=True,
     )

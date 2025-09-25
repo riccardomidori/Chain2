@@ -1,6 +1,6 @@
 import random
 
-from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint, EarlyStopping
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import numpy as np
@@ -45,6 +45,8 @@ class ModelVisualizer:
         # valid_mask = mask_cpu[sample_idx]
         # valid_power = power_cpu[sample_idx][valid_mask, 0]
         valid_power = power_cpu[sample_idx].squeeze(-1)
+        valid_prediction = prediction_cpu[sample_idx]
+        valid_prediction = valid_prediction + valid_power
         plt.style.use("seaborn-v0_8-whitegrid")
 
         # Create the figure and subplots in one line, setting the figure size and sharing the x-axis.
@@ -53,7 +55,7 @@ class ModelVisualizer:
         # Plot the data on the respective subplots.
         ax[0].plot(valid_power, "o-", color="skyblue", label="Chain2 Input Power")
         ax[1].plot(target_cpu[sample_idx], "ro--", label="NED_D Target")
-        ax[1].plot(prediction_cpu[sample_idx], "go-", label="Model Prediction")
+        ax[1].plot(valid_prediction, "go-", label="Model Prediction")
 
         # Use the correct `set_` methods for titles and labels.
         ax[0].set_title("Model Predictions vs Target Data")
@@ -91,7 +93,7 @@ class VisualizationCallback(Callback):
         # Use an iterator to avoid re-initializing the loader every time
         self.val_iter = iter(val_loader)
 
-    def on_train_epoch_end(self, trainer, pl_module):
+    def on_validation_epoch_end(self, trainer, pl_module):
         if (
             trainer.current_epoch % self.log_every_n_epochs == 0
             and trainer.current_epoch > 0
@@ -153,28 +155,27 @@ class ModelTrainingTesting:
         self.show = show
 
         self.logger = XMLLogger("ModelTrainingTesting").logger
-        # self.model_checkpoint = ModelCheckpoint(
-        #     dirpath="checkpoints",
-        #     filename=model_name + f"{monitor}:.2f",
-        #     save_top_k=1,
-        #     monitor=monitor,
-        #     mode="min"
-        #     if self.model.hparams.method in ["regression", "forecasting"]
-        #     else "max",
-        # )
-
+        self.model_checkpoint = ModelCheckpoint(
+            dirpath="checkpoints",
+            filename=model_name + f"_{monitor}:.2f.ckpt",
+            save_top_k=1,
+            monitor=monitor,
+            mode="min"
+            if self.model.hparams.method in ["regression", "forecasting"]
+            else "max",
+        )
+        early_stopping = EarlyStopping(
+            monitor=monitor,
+            patience=5,
+            verbose=True
+        )
         if callbacks is None:
-            callbacks = []
-            # if self.model.hparams.method in ["regression", "forecasting"]:
-            #     callbacks = [
-            #         self.model_checkpoint,
-            #     ]
-            # else:
-            #     callbacks = [
-            #         self.model_checkpoint,
-            #     ]
-        # else:
-        #     callbacks = callbacks + [self.model_checkpoint]
+            callbacks = [
+                self.model_checkpoint,
+                early_stopping
+            ]
+        else:
+            callbacks = callbacks + [self.model_checkpoint, early_stopping]
         self.callbacks = callbacks
         self.epochs = epochs
         self.df_scaled = None
