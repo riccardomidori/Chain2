@@ -2,17 +2,20 @@ from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
 import torch
 from ResidualUpscaler import ResidualUpscaler
+from TCN import TCNResidualUpscaler
 
 torch.set_float32_matmul_precision("medium")
 
-TARGET_FREQUENCY = 5
+TARGET_FREQUENCY = 3
 TIME_WINDOW_MINUTES = 30
 SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
 BATCH_SIZE = 128
 N_JOBS = 1
-HOUSE_LIMIT = 100
-DAYS = 10
+HOUSE_LIMIT = 150
+DAYS = 7
 LOADING_RATIO = 0.4
+LIMIT = 30000
+SHOW = True
 
 def train():
     print("Starting time series up-scaling")
@@ -23,7 +26,7 @@ def train():
         down_sample_to=TARGET_FREQUENCY,
         normalization_method="standard",
     )
-    chain2_data, ned_data = tsp.load_chain_2(ratio=LOADING_RATIO)
+    chain2_data, ned_data = tsp.load_chain_2(limit=LIMIT, ratio=LOADING_RATIO)
 
     train_dataset = UpScalingDataset(
         ned_data,
@@ -80,10 +83,10 @@ def train():
         drop_last=False,
         persistent_workers=True,
     )
-    model = ResidualUpscaler(
+    model = TCNResidualUpscaler(
         input_dim=1,
         hidden_dim=BATCH_SIZE,
-        num_blocks=4
+        num_levels=4
     )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
@@ -91,14 +94,17 @@ def train():
         model_visualizer=visualizer,
         log_every_n_epochs=5,
     )
-    callbacks = []
+    if SHOW:
+        callbacks = [visualization_callback]
+    else:
+        callbacks = []
     mt = ModelTrainingTesting(
         model=model,
         train_dataloader=train_loader,
         test_dataloader=val_loader,
         epochs=500,
         method="regression",
-        model_name=f"ResidualUpscaler_{SEQ_LEN}",
+        model_name=f"ResidualUpscaler_SEQ={SEQ_LEN}_Freq={TARGET_FREQUENCY}",
         callbacks=callbacks,
         monitor="val_loss",
     )
