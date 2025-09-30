@@ -10,7 +10,7 @@ from TCN import TCNResidualUpscaler
 torch.set_float32_matmul_precision("medium")
 
 TARGET_FREQUENCY = 3
-TIME_WINDOW_MINUTES = 6 * 60
+TIME_WINDOW_MINUTES = 20
 SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
 KERNEL = 3
 NUM_LEVELS = int(math.log2((SEQ_LEN - 3) / 4)) + 1 #For TCN, RF >= SEQ_LEN where RF (Receptive Field) = 1 + sum_LEVELS(2*(KERNEL-1))*2**i
@@ -18,7 +18,7 @@ BATCH_SIZE = 128
 N_JOBS = 1
 HOUSE_LIMIT = 150
 DAYS = 7
-LOADING_RATIO = 0.4
+LOADING_RATIO = 0.01
 LIMIT = 30000
 SHOW = True
 

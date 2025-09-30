@@ -210,14 +210,12 @@ class TimeSeriesPreparation:
                 chain2_df = chain2_df.limit(limit)
                 ned_df = ned_df.limit(limit)
 
-
         chain2_df = chain2_df.with_columns(
             time_delta=pl.col("timestamp")
             .over("house_id")
             .diff()
             .dt.total_seconds()
             .fill_null(0),
-            is_spike=pl.col("power").over("house_id").diff().abs().gt(300)
         ).filter(pl.col("time_delta").abs() <= 60)
 
         chain2_df, ned_df = self.normalize_data_simple(chain2_df, ned_df)
@@ -388,7 +386,6 @@ class UpScalingDataset(Dataset):
                 # Extract arrays
                 target_power = curr_ned["power"].to_numpy().astype(np.float32)
                 chain_power = curr_chain["power"].to_numpy().astype(np.float32)
-                # chain_spike = curr_chain["is_spike"].to_numpy().astype(np.int8)
                 chain_time_deltas = (
                     curr_chain["time_delta"].to_numpy().astype(np.float32)
                 )
@@ -401,7 +398,6 @@ class UpScalingDataset(Dataset):
                     )
                     sample = {
                         "power": torch.from_numpy(chain_power).float().unsqueeze(-1),
-                        # "is_spike": torch.from_numpy(chain_spike).float().unsqueeze(-1),
                         "target": torch.from_numpy(target_power).float().unsqueeze(-1),
                     }
                 else:
