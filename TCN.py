@@ -112,7 +112,7 @@ class TCNResidualUpscaler(pl.LightningModule):
         return residual
 
     def training_step(self, batch, batch_idx):
-        interpolated, ned, ts = batch
+        interpolated, ned = batch
         residual = self(interpolated)
         pred = interpolated + residual
         loss = self.loss_fn(pred, ned)
@@ -120,7 +120,7 @@ class TCNResidualUpscaler(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        interpolated, ned, ts = batch
+        interpolated, ned = batch
         residual = self(interpolated)
         pred = interpolated + residual
         loss = self.loss_fn(pred, ned)

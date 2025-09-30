@@ -1,5 +1,6 @@
+import datetime
 import random
-
+import seaborn as sns
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint, EarlyStopping
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
@@ -22,55 +23,38 @@ class ModelVisualizer:
             model (lightning.LightningModule): The trained PyTorch Lightning model.
         """
         self.model = model
+        sns.set_style("whitegrid")
+        np.random.seed(69)
 
-    def plot_predictions(self, ts, power, time_delta, mask, target, plot_file_path="predictions.png"):
+    def plot_predictions(self, power, time_delta, mask, target):
         self.model.eval()
         with torch.no_grad():
             prediction = self.model(power, time_delta, mask)
 
-        # Move to CPU & numpy
         power_cpu = power.detach().cpu().numpy()
-        # mask_cpu = mask.detach().cpu().numpy()
         target_cpu = target.detach().cpu().numpy()
         prediction_cpu = prediction.detach().cpu().numpy()
 
-        # Pick first sample
-        sample_idx = random.choice(range(0, power_cpu.shape[0]))
+        sample_idx = random.choices(range(0, power_cpu.shape[0]), k=5)
 
-        # Squeeze last dim
         target_cpu = target_cpu.squeeze(-1)
         prediction_cpu = prediction_cpu.squeeze(-1)
+        power_cpu = power_cpu.squeeze(-1)
+        fig, ax = plt.subplots(5)
+        for i, idx in enumerate(sample_idx):
+            valid_power = power_cpu[idx]
+            valid_prediction = prediction_cpu[idx]
+            valid_prediction = valid_prediction + valid_power
 
-        # Chain2 input: only valid points
-        # valid_mask = mask_cpu[sample_idx]
-        # valid_power = power_cpu[sample_idx][valid_mask, 0]
-        valid_power = power_cpu[sample_idx].squeeze(-1)
-        valid_prediction = prediction_cpu[sample_idx]
-        valid_prediction = valid_prediction + valid_power
-        plt.style.use("seaborn-v0_8-whitegrid")
+            # Plot the data on the respective subplots.
+            # ax[0].plot(valid_power, "o-", color="skyblue", label="Chain2 Input Power")
+            ax[i].plot(target_cpu[idx], "ro--", label="NED_D Target")
+            ax[i].plot(valid_prediction, "go-", label="Model Prediction")
+            ax[i].legend()
 
-        # Create the figure and subplots in one line, setting the figure size and sharing the x-axis.
-        fig, ax = plt.subplots(2, figsize=(12, 7), sharex=True)
-
-        # Plot the data on the respective subplots.
-        ax[0].plot(valid_power, "o-", color="skyblue", label="Chain2 Input Power")
-        ax[1].plot(target_cpu[sample_idx], "ro--", label="NED_D Target")
-        ax[1].plot(valid_prediction, "go-", label="Model Prediction")
-
-        # Use the correct `set_` methods for titles and labels.
         ax[0].set_title("Model Predictions vs Target Data")
-        ax[1].set_xlabel("Time (seconds)")
         ax[0].set_ylabel("Power (kW)")
-        ax[1].set_ylabel("Power (kW)")
-
-        # Add legends to each subplot.
-        ax[0].legend()
-        ax[1].legend()
-
-        # Adjust layout to prevent labels from overlapping.
         fig.tight_layout()
-
-        # Display the final plot.
         plt.show()
 
 
@@ -102,26 +86,20 @@ class VisualizationCallback(Callback):
                 # Get a validation batch
                 batch = next(self.val_iter)
             except StopIteration:
-                # Re-initialize the iterator if we've gone through the whole loader
                 self.val_iter = iter(self.val_loader)
                 batch = next(self.val_iter)
 
-            # Unpack the batch tuple. Make sure the order matches your Dataset.__getitem__
-            power, target, ts = batch
+            power, target = batch
             power = power.to(pl_module.device)
-            # time_delta = time_delta.to(pl_module.device)
-            # mask = mask.to(pl_module.device)
             target = target.to(pl_module.device)
 
             # Create visualization for the first sample in the batch
             # We pass the full batch and let the visualizer handle it
             self.visualizer.plot_predictions(
-                ts,
                 power,
                 None,
                 None,
                 target,
-                plot_file_path=f"epoch_{trainer.current_epoch}_predictions.png",
             )
 
 

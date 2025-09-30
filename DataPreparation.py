@@ -9,8 +9,6 @@ import polars as pl
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
-from pandas import Timedelta
 from InterpolationModel import InterpolationBaseline
 
 
@@ -369,7 +367,7 @@ class UpScalingDataset(Dataset):
                     & (pl.col("timestamp") <= end_time)
                 )
                 has_spike = not curr_chain.filter(
-                    pl.col("original_power").gt(300)
+                    pl.col("original_power").abs().gt(300)
                 ).is_empty()
 
                 if len(curr_chain) > self.max_input_len:
@@ -397,13 +395,6 @@ class UpScalingDataset(Dataset):
 
                 current_len = len(chain_power)
 
-                # Convert timestamps to numpy
-                ts = (
-                    curr_ned.with_columns(ts_int=pl.col("timestamp").dt.timestamp())
-                    .select("ts_int")
-                    .to_numpy()
-                )
-
                 if self.to_interpolate:
                     chain_power = self.interpolate_model.predict(
                         chain_power, chain_time_deltas
@@ -412,7 +403,6 @@ class UpScalingDataset(Dataset):
                         "power": torch.from_numpy(chain_power).float().unsqueeze(-1),
                         # "is_spike": torch.from_numpy(chain_spike).float().unsqueeze(-1),
                         "target": torch.from_numpy(target_power).float().unsqueeze(-1),
-                        "ts": ts,
                     }
                 else:
                     # Pad inputs
@@ -432,7 +422,6 @@ class UpScalingDataset(Dataset):
                         "time_delta": torch.from_numpy(padded_td).float().unsqueeze(-1),
                         "mask": torch.from_numpy(mask).bool(),
                         "target": torch.from_numpy(target_power).float().unsqueeze(-1),
-                        "ts": ts,
                     }
                 self.dataset.append(sample)
 
@@ -457,14 +446,13 @@ class UpScalingDataset(Dataset):
         """
         sample = self.dataset[idx]
         if self.to_interpolate:
-            return sample["power"], sample["target"], sample["ts"]
+            return sample["power"], sample["target"]
         else:
             return (
                 sample["power"],
                 sample["target"],
                 sample["mask"],
                 sample["time_delta"],
-                sample["ts"],
             )
 
 
