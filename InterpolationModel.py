@@ -110,28 +110,28 @@ if __name__ == "__main__":
     from sklearn.metrics import mean_squared_error, mean_absolute_error
     import polars as pl
 
-    TARGET_FREQ = 5
-    TIME_WINDOW_HOURS = 2
-    SEQ_LEN = 30
+    TARGET_FREQUENCY = 1
+    TIME_WINDOW_MINUTES = 60
+    SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
 
     tsp = TimeSeriesPreparation(
-        down_sample_to=TARGET_FREQ, limit=2, n_days=1, to_normalize=False
+        down_sample_to=TARGET_FREQUENCY, limit=2, n_days=1, to_normalize=False, show=True
     )
-    chain2, ned_d, power_scaling, time_delta_scaling = tsp.load_chain_2(limit=10000)
+    chain2, ned_d = tsp.load_chain_2()
     train_dataset = UpScalingDataset(
-        ned_d=ned_d,
-        chain2=chain2,
-        sequence_len=SEQ_LEN,  # Target sequence length
-        max_input_len=SEQ_LEN,  # Max irregular input length
-        min_input_len=min(10, SEQ_LEN),  # Min input length
-        overlap_ratio=0.3,  # 30% overlap
+        ned_d,
+        chain2,
+        sequence_len=SEQ_LEN,
+        max_input_len=SEQ_LEN,
+        min_input_len=10,
+        overlap_ratio=0.8,
         normalize=False,  # Already normalized
         phase="train",
         split_by_time=True,
-        time_window_hours=TIME_WINDOW_HOURS,
-        show=False,
-        to_interpolate=False,
-        only_spike=True,
+        show=True,
+        to_interpolate=True,
+        only_spike=False,
+        split_ratio=0.7,
     )
     linear_baseline = InterpolationBaseline(SEQ_LEN, method="linear")
     nearest_baseline = InterpolationBaseline(SEQ_LEN, method="nearest")

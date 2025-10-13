@@ -20,6 +20,7 @@ class TimeSeriesPreparation:
         limit=2,
         n_days=1,
         normalization_method="robust",
+        show=False
     ):
         self.to_normalize = to_normalize
         self.normalization_method = normalization_method
@@ -28,6 +29,7 @@ class TimeSeriesPreparation:
         self.down_sample_to = down_sample_to
         self.limit = limit
         self.n_days = n_days
+        self.show = show
 
     @staticmethod
     def power_crossings(
@@ -136,7 +138,7 @@ class TimeSeriesPreparation:
             df = df.group_by_dynamic(
                 "timestamp", every=f"{self.down_sample_to}s", period="1s", closed="left"
             ).agg(power=pl.col("power").first())
-        if show:
+        if self.show:
             import matplotlib.pyplot as plt
 
             fig, ax = plt.subplots(2, sharex=True)
