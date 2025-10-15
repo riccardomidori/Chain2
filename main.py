@@ -9,8 +9,8 @@ from TCN import TCNResidualUpscaler
 
 torch.set_float32_matmul_precision("medium")
 
-TARGET_FREQUENCY = 3
-TIME_WINDOW_MINUTES = 20
+TARGET_FREQUENCY = 1
+TIME_WINDOW_MINUTES = 30
 SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
 KERNEL = 3
 NUM_LEVELS = int(math.log2((SEQ_LEN - 3) / 4)) + 1 #For TCN, RF >= SEQ_LEN where RF (Receptive Field) = 1 + sum_LEVELS(2*(KERNEL-1))*2**i
@@ -18,8 +18,9 @@ BATCH_SIZE = 128
 N_JOBS = 1
 HOUSE_LIMIT = 150
 DAYS = 7
-LOADING_RATIO = 0.01
+LOADING_RATIO = 0.02
 LIMIT = 30000
+EVERY_PLOT = 2
 SHOW = True
 
 
@@ -99,7 +100,7 @@ def train():
     visualization_callback = VisualizationCallback(
         val_loader=val_loader,
         model_visualizer=visualizer,
-        log_every_n_epochs=2,
+        log_every_n_epochs=EVERY_PLOT,
     )
     if SHOW:
         callbacks = [visualization_callback]

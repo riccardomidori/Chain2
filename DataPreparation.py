@@ -1,3 +1,4 @@
+import datetime
 import pprint
 from pathlib import Path
 from typing import Tuple, Dict
@@ -20,7 +21,7 @@ class TimeSeriesPreparation:
         limit=2,
         n_days=1,
         normalization_method="robust",
-        show=False
+        show=False,
     ):
         self.to_normalize = to_normalize
         self.normalization_method = normalization_method
@@ -113,7 +114,7 @@ class TimeSeriesPreparation:
         print("\n")
         print(f"Normalization: {self.normalization_method}" f"\n")
 
-    def chain2(self, house_id, show=False, every="60s", n=1):
+    def chain2(self, house_id, every="60s", n=1):
         query = (
             "select from_unixtime(t) as timestamp, "
             "abs(p1) as power "
@@ -271,7 +272,7 @@ class UpScalingDataset(Dataset):
         self.interpolate_model = InterpolationBaseline(self.sequence_len, "linear")
 
         self.validate_inputs()
-        self.create_dataset()
+        # self.create_dataset()
 
     def get_time_splits(
         self, current_target: pl.DataFrame, timestamp_col="timestamp"
@@ -284,7 +285,7 @@ class UpScalingDataset(Dataset):
             return (
                 current_target[indices[:n_train]][timestamp_col],
                 current_target[indices[n_train:]][timestamp_col],
-                0
+                0,
             )
 
         # Time-based split (recommended)
@@ -297,7 +298,7 @@ class UpScalingDataset(Dataset):
         return (
             mask.filter(pl.col("train_mask"))[timestamp_col],
             mask.filter(pl.col("val_mask"))[timestamp_col],
-            idx
+            idx,
         )
 
     def validate_inputs(self):
@@ -381,8 +382,12 @@ class UpScalingDataset(Dataset):
 
                 if self.show:
                     fig, ax = plt.subplots()
-                    curr_ned.to_pandas().set_index("timestamp", drop=True)["original_power"].plot(ax=ax, color="red")
-                    curr_chain.to_pandas().set_index("timestamp", drop=True)["original_power"].plot(ax=ax, color="blue")
+                    curr_ned.to_pandas().set_index("timestamp", drop=True)[
+                        "original_power"
+                    ].plot(ax=ax, color="red")
+                    curr_chain.to_pandas().set_index("timestamp", drop=True)[
+                        "original_power"
+                    ].plot(ax=ax, color="blue")
                     plt.show()
 
                 # Extract arrays
@@ -430,6 +435,31 @@ class UpScalingDataset(Dataset):
                 {k: v.shape for k, v in self.dataset[0].items() if hasattr(v, "shape")},
             )
 
+    def create_house_csv(self):
+        house_ids = self.ned_d["house_id"].unique()
+        for house_id in house_ids:
+            house_ned = self.ned_d.filter(pl.col("house_id") == house_id)
+            house_chain = self.chain2.filter(pl.col("house_id") == house_id)
+            row_midnight = house_chain.with_row_index().filter(pl.col("timestamp").gt(datetime.datetime(2025, 10, 9, 0, 0, 0)))["index"][0]
+            print(row_midnight)
+            at_mid = house_chain[row_midnight - 5: row_midnight + 30]
+            print(at_mid)
+            target_power = house_ned["power"].to_numpy().astype(np.float32)
+            interpolation = InterpolationBaseline(len(target_power))
+            chain_power = house_chain["power"].to_numpy().astype(np.float32)
+            chain_time_deltas = house_chain["time_delta"].to_numpy().astype(np.float32)
+            ts = house_ned["timestamp"]
+            print(chain_power.shape)
+            chain_power = interpolation.predict(
+                chain_power, chain_time_deltas
+            )
+            print(chain_power.shape)
+            fig, ax = plt.subplots()
+            ax.plot(ts, target_power)
+            ax.plot(ts, chain_power)
+            plt.show()
+
+
     def __len__(self):
         return len(self.dataset)
 
@@ -455,13 +485,13 @@ class UpScalingDataset(Dataset):
 
 
 if __name__ == "__main__":
-    TARGET_FREQ = 5
+    TARGET_FREQ = 1
     TIME_WINDOW_MINUTES = 30
     SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQ
     tsp = TimeSeriesPreparation(
         down_sample_to=TARGET_FREQ, limit=2, n_days=1, to_normalize=False
     )
-    chain2, ned_d = tsp.load_chain_2(ratio=0.01)
+    chain2, ned_d = tsp.load_chain_2(ratio=0.02)
     train_dataset = UpScalingDataset(
         ned_d=ned_d,
         chain2=chain2,
@@ -474,3 +504,4 @@ if __name__ == "__main__":
         split_by_time=True,
         show=True,
     )
+    train_dataset.create_house_csv()
