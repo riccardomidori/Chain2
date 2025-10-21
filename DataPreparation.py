@@ -1,5 +1,6 @@
 import datetime
 import pprint
+import random
 from pathlib import Path
 from typing import Tuple, Dict
 
@@ -142,9 +143,12 @@ class TimeSeriesPreparation:
         if self.show:
             import matplotlib.pyplot as plt
 
-            fig, ax = plt.subplots(2, sharex=True)
-            df.to_pandas().set_index("timestamp", drop=True).plot(ax=ax[0])
-            df_down_sampled.to_pandas().set_index("timestamp", drop=True).plot(ax=ax[1])
+            fig, ax = plt.subplots(1, sharex=True)
+            df.to_pandas().set_index("timestamp", drop=True).plot(ax=ax, label="NED")
+            df_down_sampled.to_pandas().set_index("timestamp", drop=True).plot(
+                ax=ax, label="Chain2"
+            )
+            plt.legend()
             plt.show()
 
         return (
@@ -201,11 +205,13 @@ class TimeSeriesPreparation:
                 )
             )
             if ratio > 0:
+                house_ids = ned_df["house_id"].unique()
                 print(
-                    f"Loaded {ratio*100}% of original: {int(len(ned_df)*ratio)}/{len(ned_df)} rows"
+                    f"Loaded {ratio*100}% of original houses: {int(len(house_ids)*ratio)}/{len(house_ids)} rows"
                 )
-                chain2_df = chain2_df.limit(int(len(chain2_df) * ratio))
-                ned_df = ned_df.limit(int(len(ned_df) * ratio))
+                house_ids = random.choices(house_ids, k=int(ratio*len(house_ids)))
+                chain2_df = chain2_df.filter(pl.col("house_id").is_in(house_ids))
+                ned_df = ned_df.filter(pl.col("house_id").is_in(house_ids))
             elif limit > 0:
                 print(
                     f"Loaded {limit} rows of original: {limit}/{len(ned_df)} rows ({limit / len(ned_df)*100}%)"
@@ -219,7 +225,7 @@ class TimeSeriesPreparation:
             .diff()
             .dt.total_seconds()
             .fill_null(0),
-        ).filter(pl.col("time_delta").abs() <= 60)
+        )
 
         chain2_df, ned_df = self.normalize_data_simple(chain2_df, ned_df)
         self.calculate_statistics(chain2_df, ned_df)
@@ -436,29 +442,23 @@ class UpScalingDataset(Dataset):
             )
 
     def create_house_csv(self):
+        """
+        TODO: Interpolation introduces delays in the timestamp: check why and find a fix
+        """
         house_ids = self.ned_d["house_id"].unique()
+        interpolation = InterpolationBaseline(86400)
+        q = np.array([0 for _ in range(86400)])
         for house_id in house_ids:
-            house_ned = self.ned_d.filter(pl.col("house_id") == house_id)
             house_chain = self.chain2.filter(pl.col("house_id") == house_id)
-            row_midnight = house_chain.with_row_index().filter(pl.col("timestamp").gt(datetime.datetime(2025, 10, 9, 0, 0, 0)))["index"][0]
-            print(row_midnight)
-            at_mid = house_chain[row_midnight - 5: row_midnight + 30]
-            print(at_mid)
-            target_power = house_ned["power"].to_numpy().astype(np.float32)
-            interpolation = InterpolationBaseline(len(target_power))
-            chain_power = house_chain["power"].to_numpy().astype(np.float32)
-            chain_time_deltas = house_chain["time_delta"].to_numpy().astype(np.float32)
-            ts = house_ned["timestamp"]
-            print(chain_power.shape)
-            chain_power = interpolation.predict(
-                chain_power, chain_time_deltas
-            )
-            print(chain_power.shape)
-            fig, ax = plt.subplots()
-            ax.plot(ts, target_power)
-            ax.plot(ts, chain_power)
-            plt.show()
-
+            for day, group in house_chain.group_by_dynamic("timestamp", every="1d"):
+                chain_power = group["power"].to_numpy().astype(np.float32)
+                chain_time_deltas = group["time_delta"].to_numpy().astype(np.float32)
+                chain_power = interpolation.predict(chain_power, chain_time_deltas)
+                x = np.vstack((chain_power, q)).T
+                date = day[0].strftime("%Y%m%d")
+                key = f"{house_id}_{date}.csv"
+                pl.from_numpy(x).write_csv(f"data/ned/{key}")
+                print(house_id, chain_power.shape, q.shape, x.shape)
 
     def __len__(self):
         return len(self.dataset)
@@ -489,9 +489,9 @@ if __name__ == "__main__":
     TIME_WINDOW_MINUTES = 30
     SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQ
     tsp = TimeSeriesPreparation(
-        down_sample_to=TARGET_FREQ, limit=2, n_days=1, to_normalize=False
+        down_sample_to=TARGET_FREQ, limit=2, n_days=5, to_normalize=False, show=True
     )
-    chain2, ned_d = tsp.load_chain_2(ratio=0.02)
+    chain2, ned_d = tsp.load_chain_2(ratio=0.1)
     train_dataset = UpScalingDataset(
         ned_d=ned_d,
         chain2=chain2,
