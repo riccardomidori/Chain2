@@ -4,8 +4,8 @@ from DataPreparation import TimeSeriesPreparation, UpScalingDataset, DataLoader
 from Utils import ModelVisualizer, VisualizationCallback, ModelTrainingTesting
 import torch
 import numpy as np
-from ResidualUpscaler import ResidualUpscaler
-from TCN import TCNResidualUpscaler
+# from ResidualUpscaler import ResidualUpscaler
+from UNet import ResidualUpscaler
 
 torch.set_float32_matmul_precision("medium")
 
@@ -13,12 +13,13 @@ TARGET_FREQUENCY = 1
 TIME_WINDOW_MINUTES = 30
 SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
 KERNEL = 3
-NUM_LEVELS = int(math.log2((SEQ_LEN - 3) / 4)) + 1 #For TCN, RF >= SEQ_LEN where RF (Receptive Field) = 1 + sum_LEVELS(2*(KERNEL-1))*2**i
+NUM_LEVELS = int(math.log2(
+    (SEQ_LEN - 3) / 4)) + 1  # For TCN, RF >= SEQ_LEN where RF (Receptive Field) = 1 + sum_LEVELS(2*(KERNEL-1))*2**i
 BATCH_SIZE = 128
 N_JOBS = 1
 HOUSE_LIMIT = 150
 DAYS = 7
-LOADING_RATIO = 0.02
+LOADING_RATIO = 1
 LIMIT = 30000
 EVERY_PLOT = 2
 SHOW = True
@@ -92,10 +93,9 @@ def train():
         drop_last=False,
         persistent_workers=True,
     )
-    model = TCNResidualUpscaler(input_dim=1,
-                                hidden_dim=BATCH_SIZE,
-                                num_levels=NUM_LEVELS,
-                                kernel_size=KERNEL)
+    model = ResidualUpscaler(input_dim=2,
+                             hidden_dim=BATCH_SIZE,
+                             )
     visualizer = ModelVisualizer(model)
     visualization_callback = VisualizationCallback(
         val_loader=val_loader,

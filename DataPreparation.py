@@ -16,13 +16,13 @@ from InterpolationModel import InterpolationBaseline
 
 class TimeSeriesPreparation:
     def __init__(
-        self,
-        to_normalize=True,
-        down_sample_to=30,  # seconds to downsample the ned dataset
-        limit=2,
-        n_days=1,
-        normalization_method="robust",
-        show=False,
+            self,
+            to_normalize=True,
+            down_sample_to=30,  # seconds to downsample the ned dataset
+            limit=2,
+            n_days=1,
+            normalization_method="robust",
+            show=False,
     ):
         self.to_normalize = to_normalize
         self.normalization_method = normalization_method
@@ -35,7 +35,7 @@ class TimeSeriesPreparation:
 
     @staticmethod
     def power_crossings(
-        df: pl.DataFrame, step=300, time_col="timestamp", power_col="p"
+            df: pl.DataFrame, step=300, time_col="timestamp", power_col="p"
     ) -> pl.DataFrame:
         df = df.with_columns([pl.col(power_col).shift(1).alias("prev_power")])
         df = df.with_columns(
@@ -207,14 +207,14 @@ class TimeSeriesPreparation:
             if ratio > 0:
                 house_ids = ned_df["house_id"].unique()
                 print(
-                    f"Loaded {ratio*100}% of original houses: {int(len(house_ids)*ratio)}/{len(house_ids)} rows"
+                    f"Loaded {ratio * 100}% of original houses: {int(len(house_ids) * ratio)}/{len(house_ids)} rows"
                 )
-                house_ids = random.choices(house_ids, k=int(ratio*len(house_ids)))
+                house_ids = random.choices(house_ids, k=int(ratio * len(house_ids)))
                 chain2_df = chain2_df.filter(pl.col("house_id").is_in(house_ids))
                 ned_df = ned_df.filter(pl.col("house_id").is_in(house_ids))
             elif limit > 0:
                 print(
-                    f"Loaded {limit} rows of original: {limit}/{len(ned_df)} rows ({limit / len(ned_df)*100}%)"
+                    f"Loaded {limit} rows of original: {limit}/{len(ned_df)} rows ({limit / len(ned_df) * 100}%)"
                 )
                 chain2_df = chain2_df.limit(limit)
                 ned_df = ned_df.limit(limit)
@@ -238,24 +238,24 @@ class TimeSeriesPreparation:
 
 class UpScalingDataset(Dataset):
     def __init__(
-        self,
-        ned_d: pl.DataFrame,
-        chain2: pl.DataFrame,
-        sequence_len=30,
-        max_len=30,
-        step=30,
-        normalize: bool = True,
-        max_input_len: int = 50,  # Maximum input sequence length (low-freq)
-        min_input_len: int = 5,  # Minimum input sequence length
-        overlap_ratio: float = 0.5,  # Overlap between sequences (0.0 - 1.0)
-        power_threshold: float = 0.01,  # Minimum power to consider valid
-        time_window_hours: float = 2.0,  # Time window for matching sequences
-        split_by_time: bool = True,  # Whether to split by time (avoid data leakage)
-        split_ratio: float = 0.8,  # Train/val split ratio
-        phase: str = "train",  # 'train', 'val', or 'test'
-        show=False,
-        only_spike=False,
-        to_interpolate=True,
+            self,
+            ned_d: pl.DataFrame,
+            chain2: pl.DataFrame,
+            sequence_len=30,
+            max_len=30,
+            step=30,
+            normalize: bool = True,
+            max_input_len: int = 50,  # Maximum input sequence length (low-freq)
+            min_input_len: int = 5,  # Minimum input sequence length
+            overlap_ratio: float = 0.5,  # Overlap between sequences (0.0 - 1.0)
+            power_threshold: float = 0.01,  # Minimum power to consider valid
+            time_window_hours: float = 2.0,  # Time window for matching sequences
+            split_by_time: bool = True,  # Whether to split by time (avoid data leakage)
+            split_ratio: float = 0.8,  # Train/val split ratio
+            phase: str = "train",  # 'train', 'val', or 'test'
+            show=False,
+            only_spike=False,
+            to_interpolate=True,
     ):
         self.ned_d = ned_d
         self.chain2 = chain2
@@ -275,13 +275,14 @@ class UpScalingDataset(Dataset):
         self.show = show
         self.only_spike = only_spike
         self.to_interpolate = to_interpolate
-        self.interpolate_model = InterpolationBaseline(self.sequence_len, "linear")
+        self.interpolate_model = InterpolationBaseline(method="previous")
 
         self.validate_inputs()
+        self.create_dataset_vectorized()
         # self.create_dataset()
 
     def get_time_splits(
-        self, current_target: pl.DataFrame, timestamp_col="timestamp"
+            self, current_target: pl.DataFrame, timestamp_col="timestamp"
     ) -> Tuple[pl.Series, pl.Series, int]:
         """Split timestamps for train/val to avoid data leakage"""
         if not self.split_by_time:
@@ -311,7 +312,7 @@ class UpScalingDataset(Dataset):
         """Validate input parameters and data"""
         assert self.sequence_len > 0, "sequence_len must be positive"
         assert (
-            self.max_input_len >= self.min_input_len
+                self.max_input_len >= self.min_input_len
         ), "max_input_len must be >= min_input_len"
         assert 0 <= self.overlap_ratio < 1, "overlap_ratio must be in [0, 1)"
         assert self.phase in [
@@ -364,7 +365,7 @@ class UpScalingDataset(Dataset):
             )
 
             for i in loop_range:
-                curr_ned = house_ned[i : i + self.sequence_len]
+                curr_ned = house_ned[i: i + self.sequence_len]
                 start_time = curr_ned[0]["timestamp"].item()
                 end_time = curr_ned[-1]["timestamp"].item()
 
@@ -378,7 +379,7 @@ class UpScalingDataset(Dataset):
                 ).is_empty()
 
                 if len(curr_chain) > self.max_input_len:
-                    curr_chain = curr_chain[-self.max_input_len :]
+                    curr_chain = curr_chain[-self.max_input_len:]
 
                 if len(curr_chain) < self.min_input_len:
                     continue
@@ -441,6 +442,113 @@ class UpScalingDataset(Dataset):
                 {k: v.shape for k, v in self.dataset[0].items() if hasattr(v, "shape")},
             )
 
+    def create_dataset_vectorized(self):
+        """
+        Optimized creation:
+        1. Process whole house at once.
+        2. Interpolate entire timeline onto the NED grid.
+        3. Generate Mask.
+        4. Slice into windows.
+        """
+        house_ids = self.ned_d["house_id"].unique()
+        step_size = max(1, int(self.sequence_len * (1 - self.overlap_ratio)))
+
+        print(f"[create_dataset] Processing {len(house_ids)} houses. Phase: {self.phase}")
+
+        for house_id in house_ids:
+            # Extract data for current house
+            # Note: converting to numpy immediately is faster for math ops
+            house_ned = self.ned_d.filter(pl.col("house_id") == house_id).sort("timestamp")
+            house_chain = self.chain2.filter(pl.col("house_id") == house_id).sort("timestamp")
+
+            if len(house_ned) < self.sequence_len:
+                continue
+
+            # --- 1. Global Interpolation & Masking for this House ---
+
+            # Get Timestamps as float seconds (for interpolation)
+            # We use the raw timestamp value (Unix epoch usually) or convert to float
+            ned_ts = house_ned["timestamp"].cast(
+                pl.Int64).to_numpy() / 1e6  # Convert micro/milli if needed or just use raw
+            chain_ts = house_chain["timestamp"].cast(pl.Int64).to_numpy() / 1e6
+
+            ned_power = house_ned["power"].to_numpy().astype(np.float32)
+            chain_power = house_chain["power"].to_numpy().astype(np.float32)
+
+            # Interpolate Chain2 data onto NED timestamps (Linear Baseline)
+            # This fills the gaps creating the smooth curve the neural network will see
+            # This now uses Scipy 'previous' interpolation on absolute timestamps
+            interpolated_full = self.interpolate_model.predict(
+                input_timestamps=chain_ts,
+                input_values=chain_power,
+                target_timestamps=ned_ts
+            ).astype(np.float32)
+
+            # Create Mask: Where do we actually have Chain2 data?
+            # We find the indices in ned_ts that are closest to chain_ts
+            # np.searchsorted finds the insertion points
+            indices = np.searchsorted(ned_ts, chain_ts)
+            indices = np.clip(indices, 0, len(ned_ts) - 1)
+
+            # Create a boolean mask of the same length as NED
+            mask_full = np.zeros(len(ned_ts), dtype=np.float32)
+
+            # Mark 1.0 where we have data.
+            # Note: Since chain2 is irregular, multiple chain2 points might map to same ned point
+            # or be slightly off. This is an approximation "This second has valid data".
+            mask_full[indices] = 1.0
+
+            # --- 2. Splitting Train/Val ---
+
+            total_len = len(ned_ts)
+            split_idx = int(total_len * self.split_ratio)
+
+            if self.split_by_time:
+                if self.phase == "train":
+                    start_idx, end_idx = 0, split_idx
+                else:
+                    start_idx, end_idx = split_idx, total_len
+            else:
+                # Logic for random split not implemented for efficiency, strict time split is better
+                start_idx, end_idx = 0, total_len
+
+            # --- 3. Slicing Windows ---
+
+            # We loop through the arrays using the step size
+            # Range needs to ensure we don't go out of bounds
+            if end_idx - start_idx < self.sequence_len:
+                continue
+
+            for i in range(start_idx, end_idx - self.sequence_len + 1, step_size):
+
+                # Slices
+                window_interp = interpolated_full[i: i + self.sequence_len]
+                window_target = ned_power[i: i + self.sequence_len]
+                window_mask = mask_full[i: i + self.sequence_len]
+
+                # --- Filtering Logic ---
+
+                # Check 1: Enough real data points?
+                if np.sum(window_mask) < self.min_input_len:
+                    continue
+
+                # Check 2: Spike detection (optional)
+                # If we only want windows where power > threshold or large variance
+                if self.only_spike:
+                    # Example: Check if max power in target is high enough
+                    # OR check if there is significant change
+                    if np.max(window_interp) < 0.2:  # Assuming normalized
+                        continue
+
+                # Add to dataset
+                self.dataset.append({
+                    "input": torch.from_numpy(window_interp).float().unsqueeze(-1),  # [Seq, 1]
+                    "mask": torch.from_numpy(window_mask).float().unsqueeze(-1),  # [Seq, 1]
+                    "target": torch.from_numpy(window_target).float().unsqueeze(-1)  # [Seq, 1]
+                })
+
+        print(f"[create_dataset] Completed. Total samples: {len(self.dataset)}")
+
     def create_house_csv(self):
         """
         TODO: Interpolation introduces delays in the timestamp: check why and find a fix
@@ -466,22 +574,12 @@ class UpScalingDataset(Dataset):
     def __getitem__(self, idx: int):
         """
         Returns:
-            x: Input features [max_input_len, 1] (power) if interpolate else [max_input_len, 2] (power, time_delta)
-            y: Target sequence [sequence_len]
-            mask: Attention mask [max_input_len] (True for valid positions) if not_interpolate
-            time_deltas: Actual time deltas [max_input_len] (for temporal encoding) if not_interpolate
-            ts: timestamp for plotting
+            input_signal: The linearly interpolated signal [Seq, 1]
+            target: The ground truth signal [Seq, 1]
+            mask: The validity mask [Seq, 1]
         """
         sample = self.dataset[idx]
-        if self.to_interpolate:
-            return sample["power"], sample["target"]
-        else:
-            return (
-                sample["power"],
-                sample["target"],
-                sample["mask"],
-                sample["time_delta"],
-            )
+        return sample["input"], sample["target"], sample["mask"]
 
 
 if __name__ == "__main__":

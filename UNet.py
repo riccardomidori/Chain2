@@ -1,156 +1,87 @@
 import torch
 import torch.nn as nn
 import lightning as pl
-from torchmetrics.regression import MeanSquaredError, MeanAbsoluteError
 
 
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
+class ResidualBlock1D(nn.Module):
+    def __init__(self, channels, kernel_size=3, dilation=1):
         super().__init__()
+        # Padding must handle dilation to keep output size same as input
+        padding = (kernel_size - 1) * dilation // 2
+
         self.block = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding),
-            nn.ReLU(),
-            nn.BatchNorm1d(out_channels),
-            nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding),
-            nn.ReLU(),
-            nn.BatchNorm1d(out_channels),
+            nn.Conv1d(channels, channels, kernel_size, padding=padding, dilation=dilation),
+            nn.BatchNorm1d(channels),
+            nn.GELU(),  # GELU is often preferred over ReLU for time-series
+            nn.Conv1d(channels, channels, kernel_size, padding=padding, dilation=dilation),
+            nn.BatchNorm1d(channels),
         )
+        self.activation = nn.GELU()
 
     def forward(self, x):
-        return self.block(x)
+        return self.activation(x + self.block(x))
 
 
-class UNetUpscaler(pl.LightningModule):
-    def __init__(
-        self,
-        input_dim: int = 2,  # (power, time_delta)
-        base_channels: int = 32,
-        depth: int = 4,
-        output_seq_len: int = 120,
-        lr: float = 1e-3,
-        method="regression",
-    ):
+class ResidualUpscaler(pl.LightningModule):
+    def __init__(self, input_dim=2, hidden_dim=64, num_blocks=6, lr=1e-3, method="regression"):
+        """
+        input_dim=2: Channel 0 = Interpolated Signal, Channel 1 = Binary Mask (1=Real, 0=Interp)
+        """
         super().__init__()
         self.save_hyperparameters()
 
-        # Encoder
-        self.encoders = nn.ModuleList()
-        self.pools = nn.ModuleList()
-        channels = [input_dim]  # Track channel progression
-        pool_size = output_seq_len
-        # Build encoder layers
-        for d in range(depth):
-            in_ch = channels[-1]
-            out_ch = base_channels * (2**d)
-            self.encoders.append(ConvBlock(in_ch, out_ch))
-            self.pools.append(nn.MaxPool1d(2))
-            channels.append(out_ch)
-            pool_size = pool_size // 2
-            if pool_size == 1:
-                print(f"Stopped at depth {d} for pool_size reached 1")
-                depth = d
-                break
+        self.input_proj = nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1)
 
-        # Bottleneck
-        bottleneck_in = channels[-1]
-        bottleneck_out = bottleneck_in * 2
-        self.bottleneck = ConvBlock(bottleneck_in, bottleneck_out)
+        # Exponential dilation: 1, 2, 4, 8, 16, 32...
+        # This expands the receptive field exponentially.
+        self.res_blocks = nn.Sequential(*[
+            ResidualBlock1D(hidden_dim, dilation=2 ** i) for i in range(num_blocks)
+        ])
 
-        # Decoder
-        self.upconvs = nn.ModuleList()
-        self.decoders = nn.ModuleList()
+        self.output_proj = nn.Conv1d(hidden_dim, 1, kernel_size=3, padding=1)
+        self.loss_fn = nn.MSELoss()
 
-        decoder_in = bottleneck_out
-        for d in reversed(range(depth)):
-            skip_ch = channels[d + 1]  # Channels from corresponding encoder layer
-            decoder_out = base_channels * (2**d)
+    def forward(self, x):
+        # x shape: [Batch, 2, Seq_Len] -> (Interpolated, Mask)
+        x = self.input_proj(x)
+        x = self.res_blocks(x)
+        residual = self.output_proj(x)
+        return residual
 
-            # Upconv reduces channels
-            self.upconvs.append(
-                nn.ConvTranspose1d(decoder_in, decoder_out, kernel_size=2, stride=2)
-            )
+    def common_step(self, batch, batch_idx):
+        # Unpack the tuple from the loader
+        # We need the Mask now!
+        interpolated, target, mask = batch
 
-            # Decoder block takes upconv output + skip connection
-            self.decoders.append(ConvBlock(decoder_out + skip_ch, decoder_out))
+        # 1. Permute everything to [Batch, Channels, Seq_Len]
+        # PyTorch Conv1d expects the channel dimension to be second.
+        input_signal = interpolated.permute(0, 2, 1)  # [B, 1, Seq]
+        input_mask = mask.permute(0, 2, 1)  # [B, 1, Seq]
+        target_permuted = target.permute(0, 2, 1)  # [B, 1, Seq]
 
-            decoder_in = decoder_out
+        # 2. Concatenate signal and mask along the channel dimension
+        # Result shape: [B, 2, Seq]
+        x = torch.cat([input_signal, input_mask], dim=1)
 
-        # Output projection: map back to 1 channel (power)
-        self.output_fc = nn.Conv1d(base_channels, 1, kernel_size=1)
+        # 3. Forward pass
+        residual = self(x)  # Output: [B, 1, Seq]
 
-        # Metrics
-        self.train_mse = MeanSquaredError()
-        self.val_mse = MeanSquaredError()
-        self.train_mae = MeanAbsoluteError()
-        self.val_mae = MeanAbsoluteError()
+        # 4. Residual Connection
+        prediction = input_signal + residual
 
-        self.lr = lr
-        self.output_seq_len = output_seq_len
-
-    def forward(self, power, time_deltas, mask):
-        # Input prep: concat features along channel dimension
-        x = power
-        # x = torch.cat([power, time_deltas], dim=-1)  # [B, seq_len, 2]
-        x = x.permute(0, 2, 1)  # [B, C=2, seq_len]
-
-        # Encoder
-        skips = []
-        for enc, pool in zip(self.encoders, self.pools):
-            x = enc(x)
-            skips.append(x)
-            x = pool(x)
-
-        # Bottleneck
-        x = self.bottleneck(x)
-
-        # Decoder
-        for up, dec, skip in zip(self.upconvs, self.decoders, reversed(skips)):
-            x = up(x)
-            # Align shapes (due to pooling rounding)
-            if x.size(-1) != skip.size(-1):
-                diff = skip.size(-1) - x.size(-1)
-                x = nn.functional.pad(x, (0, diff))
-            x = torch.cat([x, skip], dim=1)
-            x = dec(x)
-
-        # Output
-        out = self.output_fc(x)  # [B, 1, seq_len]
-        out = out.permute(0, 2, 1)  # [B, seq_len, 1]
-
-        # If needed, crop or interpolate to output_seq_len
-        if out.size(1) != self.output_seq_len:
-            out = nn.functional.interpolate(
-                out.transpose(1, 2),
-                size=self.output_seq_len,
-                mode="linear",
-                align_corners=False,
-            ).transpose(1, 2)
-
-        return out
+        # 5. Calculate Loss
+        loss = self.loss_fn(prediction, target_permuted)
+        return loss
 
     def training_step(self, batch, batch_idx):
-        return self.do_step(batch, batch_idx, True)
+        loss = self.common_step(batch, batch_idx)
+        self.log("train_loss", loss)
+        return loss
 
     def validation_step(self, batch, batch_idx):
-        return self.do_step(batch, batch_idx, False)
-
-    def do_step(self, batch, batch_idx, is_train=True):
-        power, y, ts = batch
-        y_hat = self(power, None, None)
-        loss = nn.MSELoss()(y_hat, y)
-        if is_train:
-            self.train_mse(y_hat.squeeze(-1), y.squeeze(-1))
-            self.train_mae(y_hat.squeeze(-1), y.squeeze(-1))
-            self.log("train_loss", loss, prog_bar=True)
-            self.log("train_mse", self.train_mse, prog_bar=True)
-            self.log("train_mae", self.train_mae)
-        else:
-            self.val_mse(y_hat.squeeze(-1), y.squeeze(-1))
-            self.val_mae(y_hat.squeeze(-1), y.squeeze(-1))
-            self.log("val_loss", loss, prog_bar=True)
-            self.log("val_mse", self.val_mse, prog_bar=True)
-            self.log("val_mae", self.val_mae)
+        loss = self.common_step(batch, batch_idx)
+        self.log("val_loss", loss, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.lr)
+        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)

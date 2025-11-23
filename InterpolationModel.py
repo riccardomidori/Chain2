@@ -1,153 +1,68 @@
 import numpy as np
+from scipy.interpolate import interp1d
 from typing import Literal
-
-from matplotlib import pyplot as plt
-
 
 class InterpolationBaseline:
     """
-    A simple baseline model that uses various interpolation methods to upscale
-    irregularly sampled time series data to a fixed length.
+    Robust interpolation using Scipy.
+    Supports 'previous' (Step) interpolation which is best for Chain2 sensors.
     """
 
     def __init__(
         self,
-        output_seq_len: int,
-        method: Literal["linear", "nearest", "constant"] = "linear",
+        method: Literal["linear", "nearest", "previous", "next"] = "previous",
+        fill_value: Literal["extrapolate", "nan"] = "extrapolate"
     ):
         """
-        Initializes the model with the target output sequence length and interpolation method.
-
         Args:
-            output_seq_len (int): The number of data points in the output sequence.
-            method (Literal["linear", "nearest", "constant"]): The interpolation method to use.
+            method: 'previous' is recommended for event-based sensors (Chain2).
+                    'linear' is standard but may hallucinate ramps.
+            fill_value: 'extrapolate' keeps the last known value for edges.
         """
-        self.output_seq_len = output_seq_len
-        if method not in ["linear", "nearest", "constant"]:
-            raise ValueError(f"Unknown interpolation method: {method}")
         self.method = method
+        self.fill_value = fill_value
 
-    @staticmethod
-    def _interpolate_linear(
-        timestamps: np.ndarray, power: np.ndarray, output_timestamps: np.ndarray
+    def predict(
+        self,
+        input_timestamps: np.ndarray,
+        input_values: np.ndarray,
+        target_timestamps: np.ndarray
     ) -> np.ndarray:
-        """Helper for linear interpolation using numpy.interp."""
-        return np.interp(output_timestamps, timestamps, power)
-
-    @staticmethod
-    def _interpolate_nearest(
-        timestamps: np.ndarray, power: np.ndarray, output_timestamps: np.ndarray
-    ) -> np.ndarray:
-        """Helper for nearest-neighbor interpolation."""
-        # Find the index of the nearest timestamp for each output timestamp
-        indices = np.searchsorted(timestamps, output_timestamps)
-        # Handle edge cases (before the first timestamp, after the last)
-        indices = np.clip(indices, 0, len(timestamps) - 1)
-        # Get the power values at those indices
-        return power[indices]
-
-    @staticmethod
-    def _interpolate_constant(
-        timestamps: np.ndarray, power: np.ndarray, output_timestamps: np.ndarray
-    ) -> np.ndarray:
-        """Helper for piecewise constant interpolation (zero-order hold)."""
-        indices = np.searchsorted(timestamps, output_timestamps)
-        # Shift indices to the left to get the previous value
-        indices = np.clip(indices - 1, 0, len(timestamps) - 1)
-        return power[indices]
-
-    def predict(self, power: np.ndarray, time_deltas: np.ndarray) -> np.ndarray:
         """
-        Upscales the input time series using the chosen interpolation method.
+        Interpolates irregularly sampled data onto a fixed target grid.
 
         Args:
-            power (np.ndarray): The low-frequency power data.
-            time_deltas (np.ndarray): The time difference between each power sample.
+            input_timestamps (np.ndarray): Absolute timestamps of the sensor data.
+            input_values (np.ndarray): Power values corresponding to input_timestamps.
+            target_timestamps (np.ndarray): The grid you want (e.g., 0, 1, 2... 29).
 
         Returns:
-            np.ndarray: The upscaled, fixed-length power sequence.
+            np.ndarray: Interpolated values on the target grid.
         """
-        # Handle cases where the input data is too short
-        if len(power) < 2:
-            return np.full(self.output_seq_len, power[0] if len(power) > 0 else 0)
+        # 1. Input Validation
+        if len(input_timestamps) < 2:
+            # Fallback for insufficient data: return constant array of the single value or 0
+            val = input_values[0] if len(input_values) > 0 else 0.0
+            return np.full_like(target_timestamps, val, dtype=float)
 
-        # Create a cumulative time axis for the input data.
-        timestamps = np.cumsum(time_deltas)
+        # 2. Sort inputs (Scipy requires sorted x)
+        sort_idx = np.argsort(input_timestamps)
+        t_in = input_timestamps[sort_idx]
+        v_in = input_values[sort_idx]
 
-        # Create a new, evenly-spaced time axis for the output sequence.
-        output_timestamps = np.linspace(
-            timestamps[0], timestamps[-1], self.output_seq_len
+        # 3. Create Interpolator
+        # kind='previous' implements Zero-Order Hold (maintains value until next change)
+        f = interp1d(
+            t_in,
+            v_in,
+            kind=self.method,
+            fill_value=self.fill_value,
+            bounds_error=False,
+            assume_sorted=True
         )
 
-        # Perform the chosen interpolation
-        if self.method == "linear":
-            upscaled_power = self._interpolate_linear(
-                timestamps, power, output_timestamps
-            )
-        elif self.method == "nearest":
-            upscaled_power = self._interpolate_nearest(
-                timestamps, power, output_timestamps
-            )
-        elif self.method == "constant":
-            upscaled_power = self._interpolate_constant(
-                timestamps, power, output_timestamps
-            )
-        else:
-            raise ValueError(f"Unsupported interpolation method: {self.method}")
+        # 4. Interpolate onto target grid
+        return f(target_timestamps)
 
-        return upscaled_power
-
-    def __call__(self, power: np.ndarray, time_deltas: np.ndarray) -> np.ndarray:
-        """
-        Allows the class to be called directly, similar to a PyTorch model's forward method.
-        """
-        return self.predict(power, time_deltas)
-
-
-# Example usage within a testing or evaluation script
-if __name__ == "__main__":
-    from DataPreparation import TimeSeriesPreparation, UpScalingDataset
-    from sklearn.metrics import mean_squared_error, mean_absolute_error
-    import polars as pl
-
-    TARGET_FREQUENCY = 1
-    TIME_WINDOW_MINUTES = 60
-    SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
-
-    tsp = TimeSeriesPreparation(
-        down_sample_to=TARGET_FREQUENCY, limit=2, n_days=1, to_normalize=False, show=True
-    )
-    chain2, ned_d = tsp.load_chain_2()
-    train_dataset = UpScalingDataset(
-        ned_d,
-        chain2,
-        sequence_len=SEQ_LEN,
-        max_input_len=SEQ_LEN,
-        min_input_len=10,
-        overlap_ratio=0.8,
-        normalize=False,  # Already normalized
-        phase="train",
-        split_by_time=True,
-        show=True,
-        to_interpolate=True,
-        only_spike=False,
-        split_ratio=0.7,
-    )
-    linear_baseline = InterpolationBaseline(SEQ_LEN, method="linear")
-    nearest_baseline = InterpolationBaseline(SEQ_LEN, method="nearest")
-    constant_baseline = InterpolationBaseline(SEQ_LEN, method="constant")
-    errors = []
-    for chunk in train_dataset:
-        x, y, mask, time_deltas, ts = chunk
-        power = x[mask == True].squeeze().numpy()
-        time_deltas = time_deltas[mask == True].squeeze().numpy()
-        upscaled_linear = linear_baseline(power, time_deltas)
-        fig, ax = plt.subplots()
-        ax.plot(y.squeeze(), label="True", linewidth=3)
-        # ax.plot(x.squeeze(), label="Input")
-        ax.plot(y.squeeze() - upscaled_linear, label="Residual")
-        ax.plot(upscaled_linear, label="Linear")
-        plt.legend()
-        plt.show()
-    df = pl.DataFrame(errors)
-    print(df.mean())
+    def __call__(self, t_in, v_in, t_out):
+        return self.predict(t_in, v_in, t_out)

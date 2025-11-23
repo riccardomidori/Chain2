@@ -4,4 +4,25 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "polars>=1.35.2",
+    "scipy>=1.16.3",
+    "mysql-connector-python>=9.5.0",
+    "matplotlib>=3.10.7",
+    "seaborn>=0.13.2",
+    "lightning>=2.5.6",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+# This is the critical part for "explicit = true" indexes
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+torchaudio = { index = "pytorch-cu126" }
