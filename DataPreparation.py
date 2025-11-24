@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Tuple, Dict
 
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from config.DatabaseManager import DatabaseConnector
 import polars as pl
@@ -16,13 +17,13 @@ from InterpolationModel import InterpolationBaseline
 
 class TimeSeriesPreparation:
     def __init__(
-            self,
-            to_normalize=True,
-            down_sample_to=30,  # seconds to downsample the ned dataset
-            limit=2,
-            n_days=1,
-            normalization_method="robust",
-            show=False,
+        self,
+        to_normalize=True,
+        down_sample_to=30,  # seconds to downsample the ned dataset
+        limit=2,
+        n_days=1,
+        normalization_method="robust",
+        show=False,
     ):
         self.to_normalize = to_normalize
         self.normalization_method = normalization_method
@@ -35,7 +36,7 @@ class TimeSeriesPreparation:
 
     @staticmethod
     def power_crossings(
-            df: pl.DataFrame, step=300, time_col="timestamp", power_col="p"
+        df: pl.DataFrame, step=300, time_col="timestamp", power_col="p"
     ) -> pl.DataFrame:
         df = df.with_columns([pl.col(power_col).shift(1).alias("prev_power")])
         df = df.with_columns(
@@ -115,14 +116,15 @@ class TimeSeriesPreparation:
         print("\n")
         print(f"Normalization: {self.normalization_method}" f"\n")
 
-    def chain2(self, house_id, every="60s", n=1):
-        query = (
-            "select from_unixtime(t) as timestamp, "
-            "abs(p1) as power "
-            f"from ned_data_{house_id} "
-            f"where t>=unix_timestamp(curdate()) - {n}*86400 "
-            f"and t<unix_timestamp(curdate()) "
-        )
+    def chain2(self, house_id, every="60s", n=1, query=None, has_delta=False):
+        if query is None:
+            query = (
+                "select from_unixtime(t) as timestamp, "
+                "abs(p1) as power "
+                f"from ned_data_{house_id} "
+                f"where t>=unix_timestamp(curdate()) - {n}*86400 "
+                f"and t<unix_timestamp(curdate()) "
+            )
 
         df = pl.read_database_uri(query, self.connection_string).with_columns(
             timestamp=pl.col("timestamp").dt.cast_time_unit(time_unit="ms")
@@ -150,6 +152,11 @@ class TimeSeriesPreparation:
             )
             plt.legend()
             plt.show()
+        if has_delta:
+            df_down_sampled = df_down_sampled.with_columns(time_delta=pl.col("timestamp")
+            .diff()
+            .dt.total_seconds()
+            .fill_null(0))
 
         return (
             df_down_sampled.with_columns(house_id=pl.lit(house_id)),
@@ -235,27 +242,79 @@ class TimeSeriesPreparation:
             ned_df,
         )
 
+    def create_house_csv(self):
+        ned_path = Path("data/ned")
+        files = ned_path.iterdir()
+        errors = []
+
+        for file in files:
+            house_id = int(file.name.split("_")[0])
+            date = datetime.datetime.strptime(
+                file.name.split("_")[1].split(".")[0], "%Y%m%d"
+            )
+            start = date - datetime.timedelta(hours=3)
+            end = date.replace(hour=23, minute=59, second=59) + datetime.timedelta(
+                hours=3
+            )
+            query = (
+                "select from_unixtime(t) as timestamp, "
+                "abs(p1) as power "
+                f"from ned_data_{house_id} "
+                f"where t>={start.timestamp()} "
+                f"and t<={end.timestamp()} "
+            )
+            house_chain, house_ned = self.chain2(
+                house_id,
+                query=query,
+                has_delta=True
+            )
+            interpolation = InterpolationBaseline(
+                method="previous", output_seq_len=len(house_ned)
+            )
+            ned_ts = (
+                house_ned["timestamp"].cast(pl.Int64).to_numpy() / 1e6
+            )  # Convert micro/milli if needed or just use raw
+            chain_ts = house_chain["timestamp"].cast(pl.Int64).to_numpy() / 1e6
+            chain_power = house_chain["power"].to_numpy().astype(np.float32)
+            chain_time_deltas = house_chain["time_delta"].to_numpy().astype(np.float32)
+            # Interpolate Chain2 data onto NED timestamps (Linear Baseline)
+            # This fills the gaps creating the smooth curve the neural network will see
+            # This now uses Scipy 'previous' interpolation on absolute timestamps
+            interpolated_full = interpolation.predict(
+                input_timestamps=chain_ts,
+                power=chain_power,
+                target_timestamps=ned_ts,
+            ).astype(np.float32)
+            mae = np.sum(np.absolute((house_ned["power"].to_numpy() - interpolated_full))) / len(interpolated_full)
+            if mae is not None and not np.isnan(mae):
+                errors.append(mae)
+            print(file)
+            q = np.array([0 for _ in range(len(interpolated_full))])
+            x = np.vstack((interpolated_full, q)).T
+            pl.from_numpy(x).write_csv(file)
+
+        print(pl.from_numpy(np.array(errors)).describe())
 
 class UpScalingDataset(Dataset):
     def __init__(
-            self,
-            ned_d: pl.DataFrame,
-            chain2: pl.DataFrame,
-            sequence_len=30,
-            max_len=30,
-            step=30,
-            normalize: bool = True,
-            max_input_len: int = 50,  # Maximum input sequence length (low-freq)
-            min_input_len: int = 5,  # Minimum input sequence length
-            overlap_ratio: float = 0.5,  # Overlap between sequences (0.0 - 1.0)
-            power_threshold: float = 0.01,  # Minimum power to consider valid
-            time_window_hours: float = 2.0,  # Time window for matching sequences
-            split_by_time: bool = True,  # Whether to split by time (avoid data leakage)
-            split_ratio: float = 0.8,  # Train/val split ratio
-            phase: str = "train",  # 'train', 'val', or 'test'
-            show=False,
-            only_spike=False,
-            to_interpolate=True,
+        self,
+        ned_d: pl.DataFrame,
+        chain2: pl.DataFrame,
+        sequence_len=30,
+        max_len=30,
+        step=30,
+        normalize: bool = True,
+        max_input_len: int = 50,  # Maximum input sequence length (low-freq)
+        min_input_len: int = 5,  # Minimum input sequence length
+        overlap_ratio: float = 0.5,  # Overlap between sequences (0.0 - 1.0)
+        power_threshold: float = 0.01,  # Minimum power to consider valid
+        time_window_hours: float = 2.0,  # Time window for matching sequences
+        split_by_time: bool = True,  # Whether to split by time (avoid data leakage)
+        split_ratio: float = 0.8,  # Train/val split ratio
+        phase: str = "train",  # 'train', 'val', or 'test'
+        show=False,
+        only_spike=False,
+        to_interpolate=True,
     ):
         self.ned_d = ned_d
         self.chain2 = chain2
@@ -282,7 +341,7 @@ class UpScalingDataset(Dataset):
         # self.create_dataset()
 
     def get_time_splits(
-            self, current_target: pl.DataFrame, timestamp_col="timestamp"
+        self, current_target: pl.DataFrame, timestamp_col="timestamp"
     ) -> Tuple[pl.Series, pl.Series, int]:
         """Split timestamps for train/val to avoid data leakage"""
         if not self.split_by_time:
@@ -312,7 +371,7 @@ class UpScalingDataset(Dataset):
         """Validate input parameters and data"""
         assert self.sequence_len > 0, "sequence_len must be positive"
         assert (
-                self.max_input_len >= self.min_input_len
+            self.max_input_len >= self.min_input_len
         ), "max_input_len must be >= min_input_len"
         assert 0 <= self.overlap_ratio < 1, "overlap_ratio must be in [0, 1)"
         assert self.phase in [
@@ -365,7 +424,7 @@ class UpScalingDataset(Dataset):
             )
 
             for i in loop_range:
-                curr_ned = house_ned[i: i + self.sequence_len]
+                curr_ned = house_ned[i : i + self.sequence_len]
                 start_time = curr_ned[0]["timestamp"].item()
                 end_time = curr_ned[-1]["timestamp"].item()
 
@@ -379,7 +438,7 @@ class UpScalingDataset(Dataset):
                 ).is_empty()
 
                 if len(curr_chain) > self.max_input_len:
-                    curr_chain = curr_chain[-self.max_input_len:]
+                    curr_chain = curr_chain[-self.max_input_len :]
 
                 if len(curr_chain) < self.min_input_len:
                     continue
@@ -453,13 +512,19 @@ class UpScalingDataset(Dataset):
         house_ids = self.ned_d["house_id"].unique()
         step_size = max(1, int(self.sequence_len * (1 - self.overlap_ratio)))
 
-        print(f"[create_dataset] Processing {len(house_ids)} houses. Phase: {self.phase}")
+        print(
+            f"[create_dataset] Processing {len(house_ids)} houses. Phase: {self.phase}"
+        )
 
         for house_id in house_ids:
             # Extract data for current house
             # Note: converting to numpy immediately is faster for math ops
-            house_ned = self.ned_d.filter(pl.col("house_id") == house_id).sort("timestamp")
-            house_chain = self.chain2.filter(pl.col("house_id") == house_id).sort("timestamp")
+            house_ned = self.ned_d.filter(pl.col("house_id") == house_id).sort(
+                "timestamp"
+            )
+            house_chain = self.chain2.filter(pl.col("house_id") == house_id).sort(
+                "timestamp"
+            )
 
             if len(house_ned) < self.sequence_len:
                 continue
@@ -468,8 +533,9 @@ class UpScalingDataset(Dataset):
 
             # Get Timestamps as float seconds (for interpolation)
             # We use the raw timestamp value (Unix epoch usually) or convert to float
-            ned_ts = house_ned["timestamp"].cast(
-                pl.Int64).to_numpy() / 1e6  # Convert micro/milli if needed or just use raw
+            ned_ts = (
+                house_ned["timestamp"].cast(pl.Int64).to_numpy() / 1e6
+            )  # Convert micro/milli if needed or just use raw
             chain_ts = house_chain["timestamp"].cast(pl.Int64).to_numpy() / 1e6
 
             ned_power = house_ned["power"].to_numpy().astype(np.float32)
@@ -481,7 +547,7 @@ class UpScalingDataset(Dataset):
             interpolated_full = self.interpolate_model.predict(
                 input_timestamps=chain_ts,
                 input_values=chain_power,
-                target_timestamps=ned_ts
+                target_timestamps=ned_ts,
             ).astype(np.float32)
 
             # Create Mask: Where do we actually have Chain2 data?
@@ -520,11 +586,10 @@ class UpScalingDataset(Dataset):
                 continue
 
             for i in range(start_idx, end_idx - self.sequence_len + 1, step_size):
-
                 # Slices
-                window_interp = interpolated_full[i: i + self.sequence_len]
-                window_target = ned_power[i: i + self.sequence_len]
-                window_mask = mask_full[i: i + self.sequence_len]
+                window_interp = interpolated_full[i : i + self.sequence_len]
+                window_target = ned_power[i : i + self.sequence_len]
+                window_mask = mask_full[i : i + self.sequence_len]
 
                 # --- Filtering Logic ---
 
@@ -541,32 +606,21 @@ class UpScalingDataset(Dataset):
                         continue
 
                 # Add to dataset
-                self.dataset.append({
-                    "input": torch.from_numpy(window_interp).float().unsqueeze(-1),  # [Seq, 1]
-                    "mask": torch.from_numpy(window_mask).float().unsqueeze(-1),  # [Seq, 1]
-                    "target": torch.from_numpy(window_target).float().unsqueeze(-1)  # [Seq, 1]
-                })
+                self.dataset.append(
+                    {
+                        "input": torch.from_numpy(window_interp)
+                        .float()
+                        .unsqueeze(-1),  # [Seq, 1]
+                        "mask": torch.from_numpy(window_mask)
+                        .float()
+                        .unsqueeze(-1),  # [Seq, 1]
+                        "target": torch.from_numpy(window_target)
+                        .float()
+                        .unsqueeze(-1),  # [Seq, 1]
+                    }
+                )
 
         print(f"[create_dataset] Completed. Total samples: {len(self.dataset)}")
-
-    def create_house_csv(self):
-        """
-        TODO: Interpolation introduces delays in the timestamp: check why and find a fix
-        """
-        house_ids = self.ned_d["house_id"].unique()
-        interpolation = InterpolationBaseline(86400)
-        q = np.array([0 for _ in range(86400)])
-        for house_id in house_ids:
-            house_chain = self.chain2.filter(pl.col("house_id") == house_id)
-            for day, group in house_chain.group_by_dynamic("timestamp", every="1d"):
-                chain_power = group["power"].to_numpy().astype(np.float32)
-                chain_time_deltas = group["time_delta"].to_numpy().astype(np.float32)
-                chain_power = interpolation.predict(chain_power, chain_time_deltas)
-                x = np.vstack((chain_power, q)).T
-                date = day[0].strftime("%Y%m%d")
-                key = f"{house_id}_{date}.csv"
-                pl.from_numpy(x).write_csv(f"data/ned/{key}")
-                print(house_id, chain_power.shape, q.shape, x.shape)
 
     def __len__(self):
         return len(self.dataset)
@@ -581,25 +635,44 @@ class UpScalingDataset(Dataset):
         sample = self.dataset[idx]
         return sample["input"], sample["target"], sample["mask"]
 
+    def create_house_csv(self):
+        """
+        TODO: Interpolation introduces delays in the timestamp: check why and find a fix
+        """
+        house_ids = self.ned_d["house_id"].unique()
+        interpolation = InterpolationBaseline(method="previous")
+        q = np.array([0 for _ in range(86400)])
+        for house_id in house_ids:
+            house_chain = self.chain2.filter(pl.col("house_id") == house_id)
+            for day, group in house_chain.group_by_dynamic("timestamp", every="1d"):
+                chain_power = group["power"].to_numpy().astype(np.float32)
+                chain_time_deltas = group["time_delta"].to_numpy().astype(np.float32)
+                chain_power = interpolation.predict(chain_power, chain_time_deltas)
+                x = np.vstack((chain_power, q)).T
+                date = day[0].strftime("%Y%m%d")
+                key = f"{house_id}_{date}.csv"
+                pl.from_numpy(x).write_csv(f"data/ned/{key}")
+                print(house_id, chain_power.shape, q.shape, x.shape)
+
 
 if __name__ == "__main__":
     TARGET_FREQ = 1
     TIME_WINDOW_MINUTES = 30
     SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQ
     tsp = TimeSeriesPreparation(
-        down_sample_to=TARGET_FREQ, limit=2, n_days=5, to_normalize=False, show=True
+        down_sample_to=TARGET_FREQ, limit=2, n_days=5, to_normalize=False, show=False
     )
-    chain2, ned_d = tsp.load_chain_2(ratio=0.1)
-    train_dataset = UpScalingDataset(
-        ned_d=ned_d,
-        chain2=chain2,
-        sequence_len=SEQ_LEN,  # Target sequence length
-        max_input_len=SEQ_LEN,  # Max irregular input length
-        min_input_len=min(10, SEQ_LEN),  # Min input length
-        overlap_ratio=0.9,  # 30% overlap
-        normalize=False,  # Already normalized
-        phase="train",
-        split_by_time=True,
-        show=True,
-    )
-    train_dataset.create_house_csv()
+    tsp.create_house_csv()
+    # chain2, ned_d = tsp.load_chain_2(ratio=0.1)
+    # train_dataset = UpScalingDataset(
+    #     ned_d=ned_d,
+    #     chain2=chain2,
+    #     sequence_len=SEQ_LEN,  # Target sequence length
+    #     max_input_len=SEQ_LEN,  # Max irregular input length
+    #     min_input_len=min(10, SEQ_LEN),  # Min input length
+    #     overlap_ratio=0.9,  # 30% overlap
+    #     normalize=False,  # Already normalized
+    #     phase="train",
+    #     split_by_time=True,
+    #     show=True,
+    # )

@@ -29,8 +29,7 @@ class ModelVisualizer:
     def plot_predictions(self, power, time_delta, mask, target):
         self.model.eval()
         with torch.no_grad():
-            prediction = self.model(power, time_delta, mask)
-
+            prediction = self.model(power, mask, target)
         power_cpu = power.detach().cpu().numpy()
         target_cpu = target.detach().cpu().numpy()
         prediction_cpu = prediction.detach().cpu().numpy()
@@ -38,7 +37,7 @@ class ModelVisualizer:
         sample_idx = random.choices(range(0, power_cpu.shape[0]), k=5)
 
         target_cpu = target_cpu.squeeze(-1)
-        prediction_cpu = prediction_cpu.squeeze(-1)
+        prediction_cpu = prediction_cpu.squeeze(1)
         power_cpu = power_cpu.squeeze(-1)
         fig, ax = plt.subplots(5)
         for i, idx in enumerate(sample_idx):
@@ -89,16 +88,16 @@ class VisualizationCallback(Callback):
                 self.val_iter = iter(self.val_loader)
                 batch = next(self.val_iter)
 
-            power, target = batch
+            power, target, mask = batch
             power = power.to(pl_module.device)
             target = target.to(pl_module.device)
-
+            mask = mask.to(pl_module.device)
             # Create visualization for the first sample in the batch
             # We pass the full batch and let the visualizer handle it
             self.visualizer.plot_predictions(
                 power,
                 None,
-                None,
+                mask,
                 target,
             )
 

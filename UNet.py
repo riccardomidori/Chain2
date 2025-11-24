@@ -10,10 +10,14 @@ class ResidualBlock1D(nn.Module):
         padding = (kernel_size - 1) * dilation // 2
 
         self.block = nn.Sequential(
-            nn.Conv1d(channels, channels, kernel_size, padding=padding, dilation=dilation),
+            nn.Conv1d(
+                channels, channels, kernel_size, padding=padding, dilation=dilation
+            ),
             nn.BatchNorm1d(channels),
             nn.GELU(),  # GELU is often preferred over ReLU for time-series
-            nn.Conv1d(channels, channels, kernel_size, padding=padding, dilation=dilation),
+            nn.Conv1d(
+                channels, channels, kernel_size, padding=padding, dilation=dilation
+            ),
             nn.BatchNorm1d(channels),
         )
         self.activation = nn.GELU()
@@ -23,7 +27,9 @@ class ResidualBlock1D(nn.Module):
 
 
 class ResidualUpscaler(pl.LightningModule):
-    def __init__(self, input_dim=2, hidden_dim=64, num_blocks=6, lr=1e-3, method="regression"):
+    def __init__(
+        self, input_dim=2, hidden_dim=64, num_blocks=6, lr=1e-3, method="regression"
+    ):
         """
         input_dim=2: Channel 0 = Interpolated Signal, Channel 1 = Binary Mask (1=Real, 0=Interp)
         """
@@ -34,42 +40,35 @@ class ResidualUpscaler(pl.LightningModule):
 
         # Exponential dilation: 1, 2, 4, 8, 16, 32...
         # This expands the receptive field exponentially.
-        self.res_blocks = nn.Sequential(*[
-            ResidualBlock1D(hidden_dim, dilation=2 ** i) for i in range(num_blocks)
-        ])
+        self.res_blocks = nn.Sequential(
+            *[ResidualBlock1D(hidden_dim, dilation=2**i) for i in range(num_blocks)]
+        )
 
         self.output_proj = nn.Conv1d(hidden_dim, 1, kernel_size=3, padding=1)
         self.loss_fn = nn.MSELoss()
 
-    def forward(self, x):
-        # x shape: [Batch, 2, Seq_Len] -> (Interpolated, Mask)
-        x = self.input_proj(x)
-        x = self.res_blocks(x)
-        residual = self.output_proj(x)
-        return residual
-
-    def common_step(self, batch, batch_idx):
-        # Unpack the tuple from the loader
-        # We need the Mask now!
-        interpolated, target, mask = batch
-
+    def forward(self, power, mask, target):
         # 1. Permute everything to [Batch, Channels, Seq_Len]
         # PyTorch Conv1d expects the channel dimension to be second.
-        input_signal = interpolated.permute(0, 2, 1)  # [B, 1, Seq]
+        input_signal = power.permute(0, 2, 1)  # [B, 1, Seq]
         input_mask = mask.permute(0, 2, 1)  # [B, 1, Seq]
-        target_permuted = target.permute(0, 2, 1)  # [B, 1, Seq]
 
         # 2. Concatenate signal and mask along the channel dimension
         # Result shape: [B, 2, Seq]
         x = torch.cat([input_signal, input_mask], dim=1)
-
-        # 3. Forward pass
-        residual = self(x)  # Output: [B, 1, Seq]
-
-        # 4. Residual Connection
+        # x shape: [Batch, 2, Seq_Len] -> (Interpolated, Mask)
+        x = self.input_proj(x)
+        x = self.res_blocks(x)
+        residual = self.output_proj(x)
         prediction = input_signal + residual
 
-        # 5. Calculate Loss
+        return prediction
+
+    def common_step(self, batch, batch_idx):
+        power, target, mask = batch
+        prediction = self(power, mask, target)  # Output: [B, 1, Seq]
+        target_permuted = target.permute(0, 2, 1)  # [B, 1, Seq]
+
         loss = self.loss_fn(prediction, target_permuted)
         return loss
 
