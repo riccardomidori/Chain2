@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "torch",
+    "torch==2.8.0",
     "torchvision",
     "torchaudio",
     "polars>=1.35.2",
