@@ -47,7 +47,9 @@ class ModelVisualizer:
             # valid_prediction = valid_prediction + valid_power
 
             # Plot the data on the respective subplots.
-            ax[i].plot(valid_power, "o-", color="skyblue", label="Chain2 Interpolated Power")
+            ax[i].plot(
+                valid_power, "o-", color="skyblue", label="Chain2 Interpolated Power"
+            )
             ax[i].plot(target_cpu[idx], "ro--", label="NED_D Target")
             ax[i].plot(valid_prediction, "go-", label="Model Prediction")
             ax[i].legend()

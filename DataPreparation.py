@@ -52,16 +52,24 @@ class TimeSeriesPreparation:
     def normalize_data_simple(self, chain2_df: pl.DataFrame, ned_df: pl.DataFrame):
         if self.to_normalize:
             min_, max_ = ned_df["power"].min(), ned_df["power"].quantile(quantile=0.98)
-            chain2_df = chain2_df.with_columns(
-                original_power=pl.col("power"),
-                original_time_delta=pl.col("time_delta"),
-                power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
-                time_delta=pl.col("time_delta"),
-            ).drop_nans().drop_nulls()
-            ned_df = ned_df.with_columns(
-                original_power=pl.col("power"),
-                power=pl.col("power").clip(0, max_) / max_,
-            ).drop_nans().drop_nulls()
+            chain2_df = (
+                chain2_df.with_columns(
+                    original_power=pl.col("power"),
+                    original_time_delta=pl.col("time_delta"),
+                    power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
+                    time_delta=pl.col("time_delta"),
+                )
+                .drop_nans()
+                .drop_nulls()
+            )
+            ned_df = (
+                ned_df.with_columns(
+                    original_power=pl.col("power"),
+                    power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
+                )
+                .drop_nans()
+                .drop_nulls()
+            )
         else:
             chain2_df = chain2_df.with_columns(
                 original_power=pl.col("power"),
@@ -547,7 +555,11 @@ class UpScalingDataset(Dataset):
                 power=chain_power,
                 target_timestamps=ned_ts,
             ).astype(np.float32)
-
+            if not np.isfinite(interpolated_full).all():
+                # print(f"Warning: Found non-finite values in interpolation for House {house_id}. Fixing...")
+                interpolated_full = np.nan_to_num(
+                    interpolated_full, nan=0.0, posinf=1.0, neginf=0.0
+                )
             # Create Mask: Where do we actually have Chain2 data?
             # We find the indices in ned_ts that are closest to chain_ts
             # np.searchsorted finds the insertion points
@@ -589,6 +601,8 @@ class UpScalingDataset(Dataset):
                 window_target = ned_power[i : i + self.sequence_len]
                 window_mask = mask_full[i : i + self.sequence_len]
 
+                if not np.isfinite(window_target).all():
+                    continue
                 # --- Filtering Logic ---
 
                 # Check 1: Enough real data points?
