@@ -9,7 +9,7 @@ from UNet import UNetUpscaler
 torch.set_float32_matmul_precision("medium")
 
 TARGET_FREQUENCY = 1
-TIME_WINDOW_MINUTES = 30
+TIME_WINDOW_MINUTES = 60
 SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
 KERNEL = 3
 NUM_LEVELS = (
@@ -22,7 +22,7 @@ DAYS = 7
 LOADING_RATIO = 0.5
 LIMIT = 30000
 EVERY_PLOT = 2
-SHOW = True
+SHOW = False
 
 
 def train():
@@ -112,7 +112,7 @@ def train():
         test_dataloader=val_loader,
         epochs=500,
         method="regression",
-        model_name=f"ResidualUpscaler_SEQ={SEQ_LEN}_Freq={TARGET_FREQUENCY}",
+        model_name=f"UNet={SEQ_LEN}_Freq={TARGET_FREQUENCY}",
         callbacks=callbacks,
         monitor="val_loss",
     )

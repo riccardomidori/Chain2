@@ -55,13 +55,13 @@ class TimeSeriesPreparation:
             chain2_df = chain2_df.with_columns(
                 original_power=pl.col("power"),
                 original_time_delta=pl.col("time_delta"),
-                power=pl.col("power").clip(0, max_) / max_,
+                power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
                 time_delta=pl.col("time_delta"),
-            )
+            ).drop_nans().drop_nulls()
             ned_df = ned_df.with_columns(
                 original_power=pl.col("power"),
                 power=pl.col("power").clip(0, max_) / max_,
-            )
+            ).drop_nans().drop_nulls()
         else:
             chain2_df = chain2_df.with_columns(
                 original_power=pl.col("power"),
