@@ -8,23 +8,34 @@ from DataPreparation import TimeSeriesPreparation
 
 
 class InferenceManager:
-    def __init__(self, model, device="cuda", seq_len=1800, overlap=0.5):
+    def __init__(
+        self, model, device="cuda", seq_len=1800, overlap=0.5, to_normalize=True
+    ):
         self.model = model.to(device)
         self.model.eval()  # CRITICAL: Disables Dropout/BatchNorm updating
         self.device = device
         self.seq_len = seq_len
         self.stride = int(seq_len * (1 - overlap))
         self.interpolator = InterpolationBaseline(method="previous")
+        self.max = 9661
+        self.to_normalize = to_normalize
 
     def preprocess(self, chain2_df, ned_df):
         """
         Prepares raw dataframes into full-day arrays.
         """
+        if self.to_normalize:
+            chain2_df = chain2_df.with_columns(
+                power=pl.col("power").clip(0, self.max) / (self.max + 1e-8),
+            )
+            ned_df = ned_df.with_columns(
+                power=pl.col("power").clip(0, self.max) / (self.max + 1e-8),
+            )
         # 1. Extract Timestamps and Power
         # Assuming timestamps are in standard units (e.g. seconds or unix)
         # We align everything to the NED (target) grid.
         ned_ts = (
-                ned_df["timestamp"].cast(pl.Int64).to_numpy() / 1e6
+            ned_df["timestamp"].cast(pl.Int64).to_numpy() / 1e6
         )  # adjust divisor based on your data precision
         ned_power = ned_df["power"].to_numpy().astype(np.float32)
 
@@ -56,6 +67,7 @@ class InferenceManager:
         # Buffers to store the sum of predictions and the count of overlaps
         prediction_sum = np.zeros(total_len, dtype=np.float32)
         overlap_counts = np.zeros(total_len, dtype=np.float32)
+
         with torch.no_grad():  # CRITICAL: Saves memory, speeds up inference
             for start_idx in range(0, total_len - self.seq_len + 1, self.stride):
                 end_idx = start_idx + self.seq_len
@@ -66,12 +78,24 @@ class InferenceManager:
 
                 # 2. Prepare Tensor [1, 2, Seq_Len]
                 # Note: We manually handle the batch dim (1) and channel dim
-                x_interp = torch.from_numpy(win_interp).float().to(self.device).reshape((-1, self.seq_len, 1))
-                x_mask = torch.from_numpy(win_mask).float().to(self.device).reshape((-1, self.seq_len, 1))
+                x_interp = (
+                    torch.from_numpy(win_interp)
+                    .float()
+                    .to(self.device)
+                    .reshape((-1, self.seq_len, 1))
+                )
+                x_mask = (
+                    torch.from_numpy(win_mask)
+                    .float()
+                    .to(self.device)
+                    .reshape((-1, self.seq_len, 1))
+                )
 
                 # 3. Model Prediction
                 # Output is [1, 1, Seq_Len] -> Squeeze to [Seq_Len]
-                residual_predictions = self.model(x_interp, x_mask).squeeze().cpu().numpy()
+                residual_predictions = (
+                    self.model(x_interp, x_mask).squeeze().cpu().numpy()
+                )
 
                 # 4. Accumulate
                 prediction_sum[start_idx:end_idx] += residual_predictions
@@ -97,14 +121,17 @@ class InferenceManager:
 
         # 2. Predict
         pred, residual = self.predict_full(interp, mask)
+        print(
+            f"Length: {len(ned_df)} Input - {len(interp)} Interpolation - {len(pred)} Prediction"
+        )
 
         # 3. Calculate Metrics (on full 24h)
         # Note: Depending on your goal, you might want to exclude the
         # very first/last few seconds if they weren't covered by windows
         valid_idx = np.where(pred != 0)[0]  # simple check
-
-        mae_baseline = np.mean(np.abs(truth[valid_idx] - interp[valid_idx]))
-        mae_model = np.mean(np.abs(truth[valid_idx] - pred[valid_idx]))
+        truth, interp, pred = truth * self.max, interp * self.max, pred * self.max
+        mae_baseline = np.mean(np.abs(truth - interp))
+        mae_model = np.mean(np.abs(truth - pred))
 
         print(f"Baseline MAE: {mae_baseline:.4f} W")
         print(f"Model MAE:    {mae_model:.4f} W")
@@ -151,24 +178,17 @@ def run_inference_test():
 
     # 2. Setup Inference Manager
     # Overlap 0.5 means we stride by half the sequence length (smooth transitions)
-    inference = InferenceManager(model, device="cuda", seq_len=1800, overlap=0.5)
+    inference = InferenceManager(model, device="cuda", seq_len=3600, overlap=0.99)
 
     # 3. Get Data (Example for one house)
-    tsp = TimeSeriesPreparation(...)  # Your existing config
+    tsp = TimeSeriesPreparation(down_sample_to=1)  # Your existing config
     # Force loading a specific house or use existing logic
     # Let's say you have a method to get raw DFs for a specific house:
-    house_id = 235
+    house_id = 237
     chain2_df, ned_df = tsp.chain2(
-        house_id,
-        n=1
+        house_id, n=1
     )  # You might need to expose this in DataPrep
     max_ = 9661
-    chain2_df = chain2_df.with_columns(
-        power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
-    )
-    ned_df = ned_df.with_columns(
-        power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
-    )
     # 4. Run
     inference.evaluate(house_id, chain2_df, ned_df)
 
