@@ -65,7 +65,7 @@ class Up(nn.Module):
 
 
 class UNetUpscaler(pl.LightningModule):
-    def __init__(self, in_channels=2, out_channels=1, lr=1e-3):
+    def __init__(self, in_channels=2, out_channels=1, lr=1e-3, method="regression"):
         """
         in_channels: 2 (Interpolated Signal + Mask)
         out_channels: 1 (Residual Correction)
@@ -98,9 +98,15 @@ class UNetUpscaler(pl.LightningModule):
         # 5. Output Projector
         self.outc = nn.Conv1d(64, out_channels, kernel_size=1)
 
-    def forward(self, x):
+    def forward(self, interpolated, mask):
         # x shape: [Batch, 2, Seq_Len]
+        input_signal = interpolated.permute(0, 2, 1)
+        input_mask = mask.permute(0, 2, 1)
 
+        # Concat inputs
+        x = torch.cat([input_signal, input_mask], dim=1)  # [B, 2, L]
+
+        # Final Prediction = Baseline + Residual
         # --- 1. Dynamic Padding ---
         # U-Net requires size to be divisible by 2^4 (16).
         # If seq_len=1800, 1800%16 != 0. We pad to 1808.
@@ -129,43 +135,24 @@ class UNetUpscaler(pl.LightningModule):
         # --- 5. Crop Padding ---
         if pad_len > 0:
             residual = residual[..., :original_len]
+        prediction = input_signal + residual
+        return prediction
 
-        return residual
-
-    def training_step(self, batch, batch_idx):
+    def common_step(self, batch):
         interpolated, target, mask = batch
-
-        # Permute: [B, L, 1] -> [B, 1, L]
-        input_signal = interpolated.permute(0, 2, 1)
-        input_mask = mask.permute(0, 2, 1)
+        prediction = self(interpolated, mask)
         target_signal = target.permute(0, 2, 1)
 
-        # Concat inputs
-        x = torch.cat([input_signal, input_mask], dim=1)  # [B, 2, L]
-
-        # Predict Residual
-        residual = self(x)
-
-        # Final Prediction = Baseline + Residual
-        prediction = input_signal + residual
-
         loss = self.loss_fn(prediction, target_signal)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self.common_step(batch)
         self.log("train_loss", loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        interpolated, target, mask = batch
-
-        input_signal = interpolated.permute(0, 2, 1)
-        input_mask = mask.permute(0, 2, 1)
-        target_signal = target.permute(0, 2, 1)
-
-        x = torch.cat([input_signal, input_mask], dim=1)
-
-        residual = self(x)
-        prediction = input_signal + residual
-
-        loss = self.loss_fn(prediction, target_signal)
+        loss = self.common_step(batch)
         self.log("val_loss", loss, prog_bar=True)
         return loss
 
@@ -173,7 +160,7 @@ class UNetUpscaler(pl.LightningModule):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-5)
         # Optional: Reduce LR on plateau
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.5, patience=10, verbose=True
+            optimizer, mode="min", factor=0.5, patience=10
         )
         return {
             "optimizer": optimizer,

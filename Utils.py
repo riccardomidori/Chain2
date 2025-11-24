@@ -30,7 +30,7 @@ class ModelVisualizer:
     def plot_predictions(self, power, time_delta, mask, target):
         self.model.eval()
         with torch.no_grad():
-            prediction = self.model(power, mask, target)
+            prediction = self.model(power, mask)
         power_cpu = power.detach().cpu().numpy()
         target_cpu = target.detach().cpu().numpy()
         prediction_cpu = prediction.detach().cpu().numpy()
@@ -44,10 +44,10 @@ class ModelVisualizer:
         for i, idx in enumerate(sample_idx):
             valid_power = power_cpu[idx]
             valid_prediction = prediction_cpu[idx]
-            valid_prediction = valid_prediction + valid_power
+            # valid_prediction = valid_prediction + valid_power
 
             # Plot the data on the respective subplots.
-            # ax[0].plot(valid_power, "o-", color="skyblue", label="Chain2 Input Power")
+            ax[i].plot(valid_power, "o-", color="skyblue", label="Chain2 Interpolated Power")
             ax[i].plot(target_cpu[idx], "ro--", label="NED_D Target")
             ax[i].plot(valid_prediction, "go-", label="Model Prediction")
             ax[i].legend()
