@@ -6,6 +6,7 @@ from InterpolationModel import InterpolationBaseline
 from UNet import UNetUpscaler
 from DataPreparation import TimeSeriesPreparation
 
+
 class InferenceManager:
     def __init__(self, model, device="cuda", seq_len=1800, overlap=0.5):
         self.model = model.to(device)
@@ -23,7 +24,7 @@ class InferenceManager:
         # Assuming timestamps are in standard units (e.g. seconds or unix)
         # We align everything to the NED (target) grid.
         ned_ts = (
-            ned_df["timestamp"].cast(pl.Int64).to_numpy() / 1e6
+                ned_df["timestamp"].cast(pl.Int64).to_numpy() / 1e6
         )  # adjust divisor based on your data precision
         ned_power = ned_df["power"].to_numpy().astype(np.float32)
 
@@ -55,7 +56,6 @@ class InferenceManager:
         # Buffers to store the sum of predictions and the count of overlaps
         prediction_sum = np.zeros(total_len, dtype=np.float32)
         overlap_counts = np.zeros(total_len, dtype=np.float32)
-
         with torch.no_grad():  # CRITICAL: Saves memory, speeds up inference
             for start_idx in range(0, total_len - self.seq_len + 1, self.stride):
                 end_idx = start_idx + self.seq_len
@@ -66,18 +66,15 @@ class InferenceManager:
 
                 # 2. Prepare Tensor [1, 2, Seq_Len]
                 # Note: We manually handle the batch dim (1) and channel dim
-                x_interp = torch.from_numpy(win_interp).float().to(self.device)
-                x_mask = torch.from_numpy(win_mask).float().to(self.device)
-
-                # Stack to create [2, Seq_Len] -> Add Batch [1, 2, Seq_Len]
-                x = torch.stack([x_interp, x_mask], dim=0).unsqueeze(0)
+                x_interp = torch.from_numpy(win_interp).float().to(self.device).reshape((-1, self.seq_len, 1))
+                x_mask = torch.from_numpy(win_mask).float().to(self.device).reshape((-1, self.seq_len, 1))
 
                 # 3. Model Prediction
                 # Output is [1, 1, Seq_Len] -> Squeeze to [Seq_Len]
-                residual_pred = self.model(x).squeeze().cpu().numpy()
+                residual_predictions = self.model(x_interp, x_mask).squeeze().cpu().numpy()
 
                 # 4. Accumulate
-                prediction_sum[start_idx:end_idx] += residual_pred
+                prediction_sum[start_idx:end_idx] += residual_predictions
                 overlap_counts[start_idx:end_idx] += 1.0
 
         # Handle edges where counts might be 0 (if stride logic skips end)
@@ -88,7 +85,7 @@ class InferenceManager:
         avg_residual = prediction_sum / overlap_counts
 
         # Final Signal = Baseline Interpolation + Predicted Residual
-        final_prediction = interpolated + avg_residual
+        final_prediction = avg_residual
 
         return final_prediction, avg_residual
 
@@ -149,7 +146,7 @@ class InferenceManager:
 def run_inference_test():
     # 1. Load Model
     # Point this to your best .ckpt file from lightning_logs
-    checkpoint_path = "checkpoints/UNet_SEQ=1800_Freq=1.ckpt"
+    checkpoint_path = "checkpoints/UNet_SEQ=3600_Freq=1.ckpt"
     model = UNetUpscaler.load_from_checkpoint(checkpoint_path)
 
     # 2. Setup Inference Manager
@@ -160,11 +157,18 @@ def run_inference_test():
     tsp = TimeSeriesPreparation(...)  # Your existing config
     # Force loading a specific house or use existing logic
     # Let's say you have a method to get raw DFs for a specific house:
-    house_id = 12345
+    house_id = 235
     chain2_df, ned_df = tsp.chain2(
         house_id,
         n=1
     )  # You might need to expose this in DataPrep
+    max_ = 9661
+    chain2_df = chain2_df.with_columns(
+        power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
+    )
+    ned_df = ned_df.with_columns(
+        power=pl.col("power").clip(0, max_) / (max_ + 1e-8),
+    )
     # 4. Run
     inference.evaluate(house_id, chain2_df, ned_df)
 
