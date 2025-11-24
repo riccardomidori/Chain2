@@ -153,10 +153,9 @@ class TimeSeriesPreparation:
             plt.legend()
             plt.show()
         if has_delta:
-            df_down_sampled = df_down_sampled.with_columns(time_delta=pl.col("timestamp")
-            .diff()
-            .dt.total_seconds()
-            .fill_null(0))
+            df_down_sampled = df_down_sampled.with_columns(
+                time_delta=pl.col("timestamp").diff().dt.total_seconds().fill_null(0)
+            )
 
         return (
             df_down_sampled.with_columns(house_id=pl.lit(house_id)),
@@ -263,11 +262,7 @@ class TimeSeriesPreparation:
                 f"where t>={start.timestamp()} "
                 f"and t<={end.timestamp()} "
             )
-            house_chain, house_ned = self.chain2(
-                house_id,
-                query=query,
-                has_delta=True
-            )
+            house_chain, house_ned = self.chain2(house_id, query=query, has_delta=True)
             interpolation = InterpolationBaseline(
                 method="previous", output_seq_len=len(house_ned)
             )
@@ -285,7 +280,9 @@ class TimeSeriesPreparation:
                 power=chain_power,
                 target_timestamps=ned_ts,
             ).astype(np.float32)
-            mae = np.sum(np.absolute((house_ned["power"].to_numpy() - interpolated_full))) / len(interpolated_full)
+            mae = np.sum(
+                np.absolute((house_ned["power"].to_numpy() - interpolated_full))
+            ) / len(interpolated_full)
             if mae is not None and not np.isnan(mae):
                 errors.append(mae)
             print(file)
@@ -294,6 +291,7 @@ class TimeSeriesPreparation:
             pl.from_numpy(x).write_csv(file)
 
         print(pl.from_numpy(np.array(errors)).describe())
+
 
 class UpScalingDataset(Dataset):
     def __init__(
@@ -546,7 +544,7 @@ class UpScalingDataset(Dataset):
             # This now uses Scipy 'previous' interpolation on absolute timestamps
             interpolated_full = self.interpolate_model.predict(
                 input_timestamps=chain_ts,
-                input_values=chain_power,
+                power=chain_power,
                 target_timestamps=ned_ts,
             ).astype(np.float32)
 

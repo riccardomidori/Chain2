@@ -10,6 +10,7 @@ from config.Logger import XMLLogger
 from pathlib import Path
 import torch
 
+
 class ModelVisualizer:
     """
     A class to visualize the model's predictions against the original data.
@@ -141,16 +142,9 @@ class ModelTrainingTesting:
             if self.model.hparams.method in ["regression", "forecasting"]
             else "max",
         )
-        early_stopping = EarlyStopping(
-            monitor=monitor,
-            patience=5,
-            verbose=True
-        )
+        early_stopping = EarlyStopping(monitor=monitor, patience=5, verbose=True)
         if callbacks is None:
-            callbacks = [
-                self.model_checkpoint,
-                early_stopping
-            ]
+            callbacks = [self.model_checkpoint, early_stopping]
         else:
             callbacks = callbacks + [self.model_checkpoint, early_stopping]
         self.callbacks = callbacks
@@ -161,8 +155,7 @@ class ModelTrainingTesting:
         self.history = seq_len
 
         self.trainer = lightning.Trainer(
-            max_epochs=self.epochs,
-            callbacks=self.callbacks,
+            max_epochs=self.epochs, callbacks=self.callbacks, precision="16-mixed"
         )
 
     def train(self):

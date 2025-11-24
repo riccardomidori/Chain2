@@ -13,7 +13,7 @@ class InterpolationBaseline:
         self,
         method: Literal["linear", "nearest", "previous", "next"] = "previous",
         fill_value: Literal["extrapolate", "nan"] = "extrapolate",
-        output_seq_len=86400
+        output_seq_len=86400,
     ):
         """
         Args:
