@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import lightning as pl
-
+from Utils import TotalVariationLoss
 
 class DoubleConv(nn.Module):
     """
@@ -74,7 +74,8 @@ class UNetUpscaler(pl.LightningModule):
         self.save_hyperparameters()
 
         self.lr = lr
-        self.loss_fn = nn.MSELoss()  # Or nn.L1Loss() for sharper spikes
+        self.loss_fn = nn.L1Loss()
+        self.tv = TotalVariationLoss(weight=0.01)
 
         # --- U-Net Architecture ---
         # 1. Inc (Input Conv)
@@ -142,9 +143,13 @@ class UNetUpscaler(pl.LightningModule):
         interpolated, target, mask = batch
         prediction = self(interpolated, mask)
         target_signal = target.permute(0, 2, 1)
-
         loss = self.loss_fn(prediction, target_signal)
-        return loss
+        tv_loss = self.tv(prediction)
+        total_loss = loss + tv_loss
+        self.log("mae_loss", loss)
+        self.log("tv_loss", tv_loss)
+
+        return total_loss
 
     def training_step(self, batch, batch_idx):
         loss = self.common_step(batch)
