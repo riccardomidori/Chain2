@@ -645,7 +645,27 @@ class UpScalingDataset(Dataset):
             mask: The validity mask [Seq, 1]
         """
         sample = self.dataset[idx]
-        return sample["input"], sample["target"], sample["mask"]
+        input_tensor = sample["input"].clone()
+        mask_tensor = sample["mask"].clone()
+        target_tensor = sample["target"]
+
+        # TRAINING ONLY: Randomly dropout real points
+        if self.phase == "train" and random.random() < 0.5:  # 50% chance to apply dropout
+            # Find indices where mask is 1 (real data)
+            real_indices = torch.where(mask_tensor == 1)[0]
+
+            if len(real_indices) > 2:  # Keep at least start/end anchors
+                # Drop 30% of the real internal points
+                num_to_drop = int(len(real_indices) * 0.3)
+                drop_indices = real_indices[torch.randperm(len(real_indices))[:num_to_drop]]
+
+                # Set mask to 0 effectively "hiding" the data availability
+                # Note: We don't change input_tensor because "interpolated"
+                # signal would physically still be there in a real "missing data" scenario,
+                # or you can set input_tensor[drop_indices] to the previous value
+                # if you want to simulate hard data loss.
+                mask_tensor[drop_indices] = 0
+        return input_tensor, target_tensor, mask_tensor
 
     def create_house_csv(self):
         """

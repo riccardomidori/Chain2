@@ -1,4 +1,3 @@
-import datetime
 import random
 import seaborn as sns
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint, EarlyStopping
@@ -9,6 +8,21 @@ import lightning
 from config.Logger import XMLLogger
 from pathlib import Path
 import torch
+import torch.nn as nn
+
+class TotalVariationLoss(nn.Module):
+    def __init__(self, weight=0.1):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, x):
+        """
+        Penalizes the difference between t and t+1.
+        x shape: [Batch, 1, Seq_Len]
+        """
+        # Calculate difference between adjacent points
+        diff = torch.abs(x[:, :, 1:] - x[:, :, :-1])
+        return self.weight * torch.mean(diff)
 
 
 class ModelVisualizer:
