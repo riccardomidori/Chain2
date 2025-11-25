@@ -16,9 +16,9 @@ NUM_LEVELS = (
     int(math.log2((SEQ_LEN - 3) / 4)) + 1
 )  # For TCN, RF >= SEQ_LEN where RF (Receptive Field) = 1 + sum_LEVELS(2*(KERNEL-1))*2**i
 BATCH_SIZE = 64
-N_JOBS = 2
+N_JOBS = 4
 HOUSE_LIMIT = 150
-DAYS = 7
+DAYS = 15
 LOADING_RATIO = 0.75
 LIMIT = 30000
 EVERY_PLOT = 2

@@ -173,7 +173,7 @@ class InferenceManager:
 def run_inference_test():
     # 1. Load Model
     # Point this to your best .ckpt file from lightning_logs
-    checkpoint_path = "checkpoints/UNet_SEQ=3600_Freq=1.ckpt"
+    checkpoint_path = "checkpoints/UNet_SEQ=3600_Freq=1_V2.ckpt"
     model = UNetUpscaler.load_from_checkpoint(checkpoint_path)
 
     # 2. Setup Inference Manager
