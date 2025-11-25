@@ -15,9 +15,9 @@ class InferenceManager:
         self.model.eval()  # CRITICAL: Disables Dropout/BatchNorm updating
         self.device = device
         self.seq_len = seq_len
-        self.stride = int(seq_len * (1 - overlap))
+        self.stride = max(1, int(seq_len * (1 - overlap)))
         self.interpolator = InterpolationBaseline(method="previous")
-        self.max = 9661
+        self.max = 6047
         self.to_normalize = to_normalize
 
     def preprocess(self, chain2_df, ned_df):
@@ -173,12 +173,12 @@ class InferenceManager:
 def run_inference_test():
     # 1. Load Model
     # Point this to your best .ckpt file from lightning_logs
-    checkpoint_path = "checkpoints/UNet_SEQ=3600_Freq=1_V2.ckpt"
+    checkpoint_path = "checkpoints/UNet=1800_Freq=1-val_loss=0.0039.ckpt"
     model = UNetUpscaler.load_from_checkpoint(checkpoint_path)
 
     # 2. Setup Inference Manager
     # Overlap 0.5 means we stride by half the sequence length (smooth transitions)
-    inference = InferenceManager(model, device="cpu", seq_len=3600, overlap=0.99)
+    inference = InferenceManager(model, device="cuda", seq_len=1800, overlap=0.99)
 
     # 3. Get Data (Example for one house)
     tsp = TimeSeriesPreparation(down_sample_to=1)  # Your existing config

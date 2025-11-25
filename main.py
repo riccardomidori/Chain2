@@ -9,17 +9,17 @@ from UNet import UNetUpscaler
 torch.set_float32_matmul_precision("medium")
 
 TARGET_FREQUENCY = 1
-TIME_WINDOW_MINUTES = 60
+TIME_WINDOW_MINUTES = 30
 SEQ_LEN = TIME_WINDOW_MINUTES * 60 // TARGET_FREQUENCY
 KERNEL = 3
 NUM_LEVELS = (
     int(math.log2((SEQ_LEN - 3) / 4)) + 1
 )  # For TCN, RF >= SEQ_LEN where RF (Receptive Field) = 1 + sum_LEVELS(2*(KERNEL-1))*2**i
 BATCH_SIZE = 64
-N_JOBS = 4
+N_JOBS = 2
 HOUSE_LIMIT = 150
 DAYS = 15
-LOADING_RATIO = 0.75
+LOADING_RATIO = 0.5
 LIMIT = 30000
 EVERY_PLOT = 2
 SHOW = False
@@ -44,7 +44,7 @@ def train():
         sequence_len=SEQ_LEN,
         max_input_len=SEQ_LEN,
         min_input_len=10,
-        overlap_ratio=0.8,
+        overlap_ratio=0.6,
         normalize=False,  # Already normalized
         phase="train",
         split_by_time=True,
@@ -59,7 +59,7 @@ def train():
         sequence_len=SEQ_LEN,
         max_input_len=SEQ_LEN,
         min_input_len=10,
-        overlap_ratio=0.7,
+        overlap_ratio=0.5,
         normalize=False,  # Already normalized
         phase="val",
         split_by_time=True,
