@@ -175,9 +175,12 @@ class TimeSeriesPreparation:
         if not p.exists() and not (p / "chain2.csv").exists():
             users_query = (
                 "select id_abitazione as id "
-                "from tab_hourly_consumption "
+                "from tab_hourly_consumption th "
+                "inner join tab_abitazione ta on ta.id=th.id_abitazione "
                 "where timestamp>unix_timestamp(curdate()) "
                 "and id_abitazione > 2 "
+                "and ta.tipo_ned>0 "
+                "and ta.fotovoltaico in (null, 0) "
                 "group by id_abitazione "
                 "order by rand(69) "
                 f"limit {self.limit}"
