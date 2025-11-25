@@ -178,17 +178,16 @@ def run_inference_test():
 
     # 2. Setup Inference Manager
     # Overlap 0.5 means we stride by half the sequence length (smooth transitions)
-    inference = InferenceManager(model, device="cuda", seq_len=3600, overlap=0.99)
+    inference = InferenceManager(model, device="cpu", seq_len=3600, overlap=0.99)
 
     # 3. Get Data (Example for one house)
     tsp = TimeSeriesPreparation(down_sample_to=1)  # Your existing config
     # Force loading a specific house or use existing logic
     # Let's say you have a method to get raw DFs for a specific house:
-    house_id = 237
+    house_id = 3400
     chain2_df, ned_df = tsp.chain2(
         house_id, n=1
     )  # You might need to expose this in DataPrep
-    max_ = 9661
     # 4. Run
     inference.evaluate(house_id, chain2_df, ned_df)
 
