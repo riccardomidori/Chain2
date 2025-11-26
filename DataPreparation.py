@@ -291,6 +291,7 @@ class TimeSeriesPreparation:
             x = np.vstack((interpolated_full, q)).T
             pl.from_numpy(x).write_csv(file)
 
+
 class UpScalingDataset(Dataset):
     def __init__(
         self,
@@ -640,14 +641,18 @@ class UpScalingDataset(Dataset):
         target_tensor = sample["target"]
 
         # TRAINING ONLY: Randomly dropout real points
-        if self.phase == "train" and random.random() < 0.5:  # 50% chance to apply dropout
+        if (
+            self.phase == "train" and random.random() < 0.5
+        ):  # 50% chance to apply dropout
             # Find indices where mask is 1 (real data)
             real_indices = torch.where(mask_tensor == 1)[0]
 
             if len(real_indices) > 2:  # Keep at least start/end anchors
                 # Drop 30% of the real internal points
                 num_to_drop = int(len(real_indices) * 0.3)
-                drop_indices = real_indices[torch.randperm(len(real_indices))[:num_to_drop]]
+                drop_indices = real_indices[
+                    torch.randperm(len(real_indices))[:num_to_drop]
+                ]
 
                 # Set mask to 0 effectively "hiding" the data availability
                 # Note: We don't change input_tensor because "interpolated"
