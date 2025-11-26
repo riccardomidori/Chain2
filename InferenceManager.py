@@ -170,6 +170,43 @@ class InferenceManager:
         plt.show()
 
 
+def create_house_csv():
+    import datetime
+    from pathlib import Path
+
+    ned_path = Path("data/ned_model")
+    files = ned_path.iterdir()
+    tsp = TimeSeriesPreparation(down_sample_to=1)  # Your existing config
+    checkpoint_path = "checkpoints/UNet=1800_Freq=1-val_loss=0.0039.ckpt"
+    model = UNetUpscaler.load_from_checkpoint(checkpoint_path)
+    inference = InferenceManager(model, device="cuda", seq_len=1800, overlap=0.99)
+
+    for file in files:
+        house_id = int(file.name.split("_")[0])
+        date = datetime.datetime.strptime(
+            file.name.split("_")[1].split(".")[0], "%Y%m%d"
+        )
+        start = date - datetime.timedelta(hours=3)
+        end = date.replace(hour=23, minute=59, second=59) + datetime.timedelta(hours=3)
+        query = (
+            "select from_unixtime(t) as timestamp, "
+            "abs(p1) as power "
+            f"from ned_data_{house_id} "
+            f"where t>={start.timestamp()} "
+            f"and t<={end.timestamp()} "
+        )
+        house_chain, house_ned = tsp.chain2(house_id, query=query)
+        interp, mask, truth, ts = inference.preprocess(house_chain, house_ned)
+
+        # 2. Predict
+        pred, residual = inference.predict_full(interp, mask)
+        print(house_id, date)
+
+        q = np.array([0 for _ in range(len(pred))])
+        x = np.vstack((pred, q)).T
+        pl.from_numpy(x).write_csv(f"data/ned_model/{file.name}")
+
+
 def run_inference_test():
     # 1. Load Model
     # Point this to your best .ckpt file from lightning_logs
@@ -193,4 +230,4 @@ def run_inference_test():
 
 
 if __name__ == "__main__":
-    run_inference_test()
+    create_house_csv()

@@ -255,13 +255,13 @@ class TimeSeriesPreparation:
     def create_house_csv(self):
         ned_path = Path("data/ned")
         files = ned_path.iterdir()
-        errors = []
 
         for file in files:
             house_id = int(file.name.split("_")[0])
             date = datetime.datetime.strptime(
                 file.name.split("_")[1].split(".")[0], "%Y%m%d"
             )
+            print(house_id, date)
             start = date - datetime.timedelta(hours=3)
             end = date.replace(hour=23, minute=59, second=59) + datetime.timedelta(
                 hours=3
@@ -282,27 +282,14 @@ class TimeSeriesPreparation:
             )  # Convert micro/milli if needed or just use raw
             chain_ts = house_chain["timestamp"].cast(pl.Int64).to_numpy() / 1e6
             chain_power = house_chain["power"].to_numpy().astype(np.float32)
-            chain_time_deltas = house_chain["time_delta"].to_numpy().astype(np.float32)
-            # Interpolate Chain2 data onto NED timestamps (Linear Baseline)
-            # This fills the gaps creating the smooth curve the neural network will see
-            # This now uses Scipy 'previous' interpolation on absolute timestamps
             interpolated_full = interpolation.predict(
                 input_timestamps=chain_ts,
                 power=chain_power,
                 target_timestamps=ned_ts,
             ).astype(np.float32)
-            mae = np.sum(
-                np.absolute((house_ned["power"].to_numpy() - interpolated_full))
-            ) / len(interpolated_full)
-            if mae is not None and not np.isnan(mae):
-                errors.append(mae)
-            print(file)
             q = np.array([0 for _ in range(len(interpolated_full))])
             x = np.vstack((interpolated_full, q)).T
             pl.from_numpy(x).write_csv(file)
-
-        print(pl.from_numpy(np.array(errors)).describe())
-
 
 class UpScalingDataset(Dataset):
     def __init__(
