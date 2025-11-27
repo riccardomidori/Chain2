@@ -291,6 +291,26 @@ class TimeSeriesPreparation:
             x = np.vstack((interpolated_full, q)).T
             pl.from_numpy(x).write_csv(file)
 
+    def create_annotation_csv(self, device_id=8):
+        ned_path = Path("data/ned")
+        files = ned_path.iterdir()
+        house_ids = set(f.name.split("_")[0] for f in files)
+        in_clause = ",".join(house_ids)
+
+        query = f"""
+        select id_abitazione as house_id, 
+        date(from_unixtime(start_time)) as date,
+        start_time,
+        end_time
+        from tab_rt_dailyevappliances 
+        where id_abitazione in ({in_clause})
+        and start_time>=unix_timestamp(20251007)
+        and end_time<=unix_timestamp(20251015235959)
+        and id_dispositivo={device_id}
+        """
+        df = pl.read_database_uri(query, self.connection_string)
+        print(df)
+
 
 class UpScalingDataset(Dataset):
     def __init__(
@@ -689,17 +709,4 @@ if __name__ == "__main__":
     tsp = TimeSeriesPreparation(
         down_sample_to=TARGET_FREQ, limit=2, n_days=5, to_normalize=False, show=False
     )
-    tsp.create_house_csv()
-    # chain2, ned_d = tsp.load_chain_2(ratio=0.1)
-    # train_dataset = UpScalingDataset(
-    #     ned_d=ned_d,
-    #     chain2=chain2,
-    #     sequence_len=SEQ_LEN,  # Target sequence length
-    #     max_input_len=SEQ_LEN,  # Max irregular input length
-    #     min_input_len=min(10, SEQ_LEN),  # Min input length
-    #     overlap_ratio=0.9,  # 30% overlap
-    #     normalize=False,  # Already normalized
-    #     phase="train",
-    #     split_by_time=True,
-    #     show=True,
-    # )
+    tsp.create_annotation_csv()
