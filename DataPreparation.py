@@ -1,6 +1,7 @@
 import datetime
 import pprint
 import random
+import time
 from pathlib import Path
 from typing import Tuple, Dict
 
@@ -292,24 +293,30 @@ class TimeSeriesPreparation:
             pl.from_numpy(x).write_csv(file)
 
     def create_annotation_csv(self, device_id=8):
+        if not Path(f"data/annotations/{device_id}").exists():
+            Path(f"data/annotations/{device_id}").mkdir(parents=True)
         ned_path = Path("data/ned")
         files = ned_path.iterdir()
         house_ids = set(f.name.split("_")[0] for f in files)
         in_clause = ",".join(house_ids)
 
         query = f"""
-        select id_abitazione as house_id, 
+        select id_abitazione as building_id, 
         date(from_unixtime(start_time)) as date,
-        start_time,
-        end_time
+        unix_timestamp(date(from_unixtime(start_time))) as date_ts,
+        start_time - unix_timestamp(date(from_unixtime(start_time))) as start,
+        end_time - unix_timestamp(date(from_unixtime(start_time))) as end
         from tab_rt_dailyevappliances 
         where id_abitazione in ({in_clause})
         and start_time>=unix_timestamp(20251007)
         and end_time<=unix_timestamp(20251015235959)
         and id_dispositivo={device_id}
         """
-        df = pl.read_database_uri(query, self.connection_string)
-        print(df)
+        df = pl.read_database_uri(query, self.connection_string).with_columns(
+            appliance=pl.lit("washing_machine")
+        )
+
+        df.write_csv(f"data/annotations/{device_id}/positive_examples.csv")
 
 
 class UpScalingDataset(Dataset):
