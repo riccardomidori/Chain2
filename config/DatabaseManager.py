@@ -1,126 +1,106 @@
+import configparser
 import contextlib
-import datetime
 import logging
-
-import mysql.connector
+from pathlib import Path
 from mysql.connector.connection import MySQLConnection
-from mysql.connector.cursor import MySQLCursor
-from config.ConfigManager import ConfigManager
-from config.Logger import XMLLogger
-from config.Utils import auto_str
+from mysql.connector.cursor import MySQLCursorDict
+from mysql.connector import pooling
 
 
-@auto_str
 class DatabaseConnector:
-    def __init__(self, name="MySQL", logger: logging.Logger = None):
-        if logger is None:
-            logger = XMLLogger(
-                name="DatabaseManager",
-                path_to_log="log/DigitalManager",
-                level="debug",
-                log_file="server.log",
-            ).logger
+    def __init__(
+        self,
+        name="DatabaseConnector",
+        logger: logging.Logger = None,
+        retries=10,
+        delay=30,
+        connection_timeout=10 * 3600,
+    ):
         self.name = name
-        self.logger = logger
-        cm = ConfigManager()
-
-        self.port = cm.mysql_port
-        self.dbname = cm.mysql_dbname
-        self.passwd = cm.mysql_password
-        self.host = cm.mysql_host
-        self.user = cm.mysql_user
-
+        self.connection_timeout = connection_timeout
+        config_path = Path("config/config.ini")
+        config_ = configparser.ConfigParser(interpolation=None)
+        config_.read(config_path)
+        env = config_["ENV"]["ENV"]
+        self.env = env
+        env = config_[f"MIDORI-{self.env}"]
+        self.db_config = {
+            "host": env["HOST"],
+            "database": env["MYDB"],
+            "user": env["USER"],
+            "password": env["PASS"],
+            "port": int(env["PORT"]),
+            "connection_string": f"mysql://{env['USER']}:{env['PASS']}@{env['HOST']}:{int(env['PORT'])}/{env['MYDB']}",
+        }
+        self.delay = delay
+        self.retries = retries
+        self.port = int(env["PORT"])
+        self.dbname = env["MYDB"]
+        self.passwd = env["PASS"]
+        self.host = env["HOST"]
+        self.user = env["USER"]
+        self.base_url = env["BASE_EXT_URL"]
         self.connection = None
         self.connector = None
         self.connection_string = (
             f"mysql://{self.user}:{self.passwd}@{self.host}:{self.port}/{self.dbname}"
         )
-        self.logger.debug(f"Initialize DatabaseManager-{self.name}")
+
+        self.pool = pooling.MySQLConnectionPool(
+            pool_name="ned_sql_pool",
+            pool_size=5,  # Adjust based on concurrency
+            pool_reset_session=True,
+            host=self.host,
+            user=self.user,
+            passwd=self.passwd,
+            database=self.dbname,
+            port=self.port,
+        )
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.logger.info(f"Exiting Database Connection")
-
         if exc_tb is None:
             self.connector.commit()
         else:
             self.connector.rollback()
         self.connector.close()
 
-    def set_name(self, name):
-        self.logger.debug(f"MySQL Connection from {self.name} to {name}")
-        self.name = name
-
     @contextlib.contextmanager
     def __connect__(self) -> MySQLConnection:
-        self.logger.info(f"Connecting with MySQL")
-
-        _connection = mysql.connector.connect(
-            host=self.host,
-            user=self.user,
-            passwd=self.passwd,
-            port=self.port,
-            db=self.dbname,
-        )
+        connection_ = None
         try:
-            yield _connection
+            # Get connection from pool instead of creating new one
+            connection_ = self.pool.get_connection()
+            if connection_.is_connected():
+                print("MYSQL-Connection: acquired from pool")
+        except Exception as err:
+            print(f"Error getting connection: {err}")
+            raise
+
+        try:
+            yield connection_
         except Exception:
-            self.logger.exception(f"Exception on Config {self}")
-            _connection.rollback()
+            if connection_:
+                connection_.rollback()
             raise
         else:
-            _connection.commit()
+            if connection_:
+                connection_.commit()
         finally:
-            _connection.close()
+            if connection_:
+                # This doesn't close TCP, it returns to pool
+                connection_.close()
 
     @contextlib.contextmanager
-    def __cursor__(self) -> MySQLCursor:
-        self.logger.info(f"Creating DatabaseManager cursor")
-
+    def execute_query(self) -> MySQLCursorDict:
+        """Yields a cursor, handles connection/commit automatically."""
+        # Uses the __connect__ logic internally
         with self.__connect__() as conn:
-            cursor_ = conn.cursor(buffered=True, dictionary=True)
+            cursor: MySQLCursorDict = conn.cursor(dictionary=True, buffered=True)
             try:
-                yield cursor_
+                yield cursor
             finally:
-                cursor_.close()
-
-    @staticmethod
-    def get_cursor(connection: MySQLConnection):
-        return connection.cursor(buffered=True, dictionary=True)
-
-    def save_monitoring(self,
-                        software_id: str,
-                        utility: str,
-                        has_alert: bool,
-                        has_data: bool,
-                        timestamp_data=None,
-                        notes=None):
-        self.logger.debug(f"Save monitoring for {utility}")
-        with self.__connect__() as c:
-            now = int(datetime.datetime.now().timestamp())
-            cursor = self.get_cursor(c)
-            if has_data and has_alert:
-                query = ("INSERT INTO tab_software_monitoring "
-                         "(id_software, timestamp_run, timestamp_software, admin_utility, alert, note) "
-                         "VALUES ('%s', %s, %s, '%s', %s, '%s')")
-                cursor.execute(query % (software_id, now, timestamp_data, utility, True, notes))
-            elif has_data:
-                query = ("INSERT INTO tab_software_monitoring "
-                         "(id_software, timestamp_run, timestamp_software, admin_utility) "
-                         "VALUES ('%s', %s, %s, '%s')")
-                cursor.execute(query % (software_id, now, timestamp_data, utility))
-            elif has_alert:
-                query = ("INSERT INTO tab_software_monitoring "
-                         "(id_software, timestamp_run, admin_utility, alert, note) "
-                         "VALUES ('%s', %s, '%s', %s, '%s')")
-                cursor.execute(query % (software_id, now, utility, True, notes))
-            else:
-                query = ("INSERT INTO tab_software_monitoring "
-                         "(id_software, timestamp_run, admin_utility) "
-                         "VALUES ('%s', %s, '%s')")
-                cursor.execute(query % (software_id, now, utility))
-
-            c.commit()
+                cursor.close()
 
 
 if __name__ == "__main__":
-    pass
+    DatabaseConnector()
