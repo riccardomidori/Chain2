@@ -156,9 +156,11 @@ class ModelTrainingTesting:
             filename=model_name + "-{val_loss:.4f}",
             save_top_k=1,
             monitor=monitor,
-            mode="min"
-            if self.model.hparams.method in ["regression", "forecasting"]
-            else "max",
+            mode=(
+                "min"
+                if self.model.hparams.method in ["regression", "forecasting"]
+                else "max"
+            ),
         )
         early_stopping = EarlyStopping(monitor=monitor, patience=5, verbose=True)
         if callbacks is None:
@@ -244,10 +246,9 @@ class OutputComparison:
         df_2 = self.df.filter(pl.col("model").eq("model2"))
         df_3 = self.df.filter(pl.col("model").eq("model3"))
 
-        df_12 = df.join(df_2, on=["house_id", "date"]).with_columns(
-
-        )
+        df_12 = df.join(df_2, on=["house_id", "date"]).with_columns()
         print(df_12)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     OutputComparison().run()
