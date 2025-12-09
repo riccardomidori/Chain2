@@ -9,6 +9,8 @@ from config.Logger import XMLLogger
 from pathlib import Path
 import torch
 import torch.nn as nn
+import polars as pl
+
 
 class TotalVariationLoss(nn.Module):
     def __init__(self, weight=0.1):
@@ -231,3 +233,21 @@ class ModelTrainingTesting:
                 x_input = x.reshape(1, 1, -1)
                 y_hat = trained_model(x_input)
                 print(y_hat.item(), y)
+
+
+class OutputComparison:
+    def __init__(self):
+        self.df = pl.read_csv("data/detection_comparison.CSV")
+
+    def run(self):
+        df = self.df.filter(pl.col("model").eq("model1"))
+        df_2 = self.df.filter(pl.col("model").eq("model2"))
+        df_3 = self.df.filter(pl.col("model").eq("model3"))
+
+        df_12 = df.join(df_2, on=["house_id", "date"]).with_columns(
+
+        )
+        print(df_12)
+
+if __name__ == '__main__':
+    OutputComparison().run()

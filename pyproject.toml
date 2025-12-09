@@ -16,6 +16,7 @@ dependencies = [
     "lightning>=2.5.6",
     "connectorx>=0.4.4",
     "pyarrow>=22.0.0",
+    "fastexcel>=0.18.0",
 ]
 
 [[tool.uv.index]]
