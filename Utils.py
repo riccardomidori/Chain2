@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import polars as pl
+from polars import selectors as cs
 
 
 class TotalVariationLoss(nn.Module):
@@ -245,10 +246,79 @@ class OutputComparison:
         df = self.df.filter(pl.col("model").eq("model1"))
         df_2 = self.df.filter(pl.col("model").eq("model2"))
         df_3 = self.df.filter(pl.col("model").eq("model3"))
+        print(df)
+        print(df_2)
+        models_cols = ["DW", "WM", "OV", "IR", "DR", "CN", "BE", "ST"]
+        df_12 = (
+            df.join(df_2, on=["house_id", "date"], suffix="_m2")
+            .with_columns(
+                [
+                    # --- Metric 1: MAE (Absolute Difference) ---
+                    # Good for: "How many counts are we off by on average?"
+                    (pl.col(col) - pl.col(f"{col}_m2")).abs().alias(f"{col}_MAE")
+                    for col in models_cols
+                ]
+            )
+            .with_columns(
+                [
+                    # --- Metric 2: SMAPE (Relative Difference) ---
+                    # Good for: "How different are they in percentage?"
+                    # Formula: |A - B| / ((A + B) / 2)
+                    # We use .fill_nan(0) to handle the case where both models predict 0
+                    (
+                        (pl.col(col) - pl.col(f"{col}_m2")).abs()
+                        / ((pl.col(col) + pl.col(f"{col}_m2")) / 2)
+                    )
+                    .fill_nan(0)  # Handles 0/0 division
+                    .alias(f"{col}_SMAPE")
+                    for col in models_cols
+                ]
+            )
+            .select([cs.ends_with("MAE"), cs.ends_with("SMAPE")])
+        )
+        # 4. Analysis
+        # View average errors across all days
+        error_stats = df_12.select(
+            pl.col("^.*_MAE$").mean(),  # Average count difference
+            pl.col("^.*_SMAPE$").mean(),  # Average % difference
+        )
+        for c in error_stats.columns:
+            print(error_stats[c])
 
-        df_12 = df.join(df_2, on=["house_id", "date"]).with_columns()
-        print(df_12)
+        df_13 = (
+            df.join(df_3, on=["house_id", "date"], suffix="_m3")
+            .with_columns(
+                [
+                    # --- Metric 1: MAE (Absolute Difference) ---
+                    # Good for: "How many counts are we off by on average?"
+                    (pl.col(col) - pl.col(f"{col}_m3")).abs().alias(f"{col}_MAE")
+                    for col in models_cols
+                ]
+            )
+            .with_columns(
+                [
+                    # --- Metric 2: SMAPE (Relative Difference) ---
+                    # Good for: "How different are they in percentage?"
+                    # Formula: |A - B| / ((A + B) / 2)
+                    # We use .fill_nan(0) to handle the case where both models predict 0
+                    (
+                        (pl.col(col) - pl.col(f"{col}_m3")).abs()
+                        / ((pl.col(col) + pl.col(f"{col}_m3")) / 2)
+                    )
+                    .fill_nan(0)  # Handles 0/0 division
+                    .alias(f"{col}_SMAPE")
+                    for col in models_cols
+                ]
+            )
+            .select([cs.ends_with("MAE"), cs.ends_with("SMAPE")])
+        )
+        error_stats = df_13.select(
+            pl.col("^.*_MAE$").mean(),  # Average count difference
+            pl.col("^.*_SMAPE$").mean(),  # Average % difference
+        )
+        print(error_stats)
 
 
 if __name__ == "__main__":
+    pl.Config.set_tbl_cols(10)
     OutputComparison().run()
